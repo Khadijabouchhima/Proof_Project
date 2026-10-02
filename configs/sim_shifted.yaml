@@ -1,0 +1,39 @@
+# Held-out regime (Spec Section 4.8): different drift shapes, noise and confounder rates.
+# Used ONLY for generalization testing, never for tuning.
+name: sim_shifted
+n_subjects: 200
+n_days: 180
+drifter_fraction: 0.5
+population:
+  hr_rest:  {mean: 70.0, sd: 10.0, min: 50.0, max: 92.0}
+  hrv_rmssd_median: 38.0
+  hrv_log_sd: 0.40
+  hr_hrv_corr: -0.4
+  sbp: {mean: 119.0, sd: 8.5}
+  dbp: {mean: 75.0, sd: 6.0}
+  nondrifter_sbp_cap: 124.0
+  nondrifter_dbp_cap: 77.0
+drift:
+  onset_range: [45, 110]
+  shapes: [step_ramp, plateau_accelerate]
+  delta_sbp: [7.0, 18.0]
+  delta_dbp: [3.0, 9.0]
+  delta_hr: [2.0, 7.0]
+  delta_hrv_frac: [-0.22, -0.08]
+  event_window: [20, 175]
+confounders:
+  exercise_block: {rate_per_subject: 1.6, duration_days: [7, 28]}
+  illness:        {rate_per_subject: 1.4, duration_days: [3, 14]}
+  poor_sleep:     {rate_per_subject: 1.3, duration_days: [5, 21]}
+  seasonal_shift: {rate_per_subject: 0.9, duration_days: [14, 35]}
+  stress_day:     {rate_per_subject: 5.0, duration_days: [1, 3]}
+measurement:
+  bp_readings_per_day: [1, 3]
+  bp_gap_prob: 0.30
+  bp_noise_sd: 6.0
+  noise_level: high
+corruption:
+  mcar_rate: 0.12
+  block_missing: {rate_per_subject: 2.0, duration_days: [1, 7]}
+  modality_dropout: {rate_per_subject: 0.7, duration_days: [7, 21]}
+  motion_artifact_prob: {walk: 0.08, exercise: 0.40}

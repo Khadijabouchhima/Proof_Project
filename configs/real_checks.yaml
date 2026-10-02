@@ -1,0 +1,33 @@
+# Real-dataset rules. No real dataset has onset labels or BP follow-up, so:
+#  - T_ref, the 30-day horizon and the supervised risk model are NOT used on real data
+#  - only label-free engine stages run (quality, baseline, context, trajectory, detectors, evidence state)
+#  - real data is never merged with simulated data or with another dataset
+common:
+  uses_reference_event: false
+  uses_task_horizon: false
+  supervised_risk_model: false
+  label_free_stages: [quality, baseline, context, trajectory, detector, evidence_state]
+datasets:
+  baigutanova_hrv:        # 49 people, 4 weeks, smartwatch (CC BY 4.0)
+    baseline_days: 7
+    min_valid_days: 5
+    role: [anchor, check]
+    parameters_anchored: [quality_vs_motion, missingness, relative_hrv_variability]
+    checks: [quality_motion, baseline_under_missingness]
+  pmdata:                 # Fitbit, months; verify the version (16 people x 5 months vs older 12 x 3)
+    baseline_days: 28
+    min_valid_days: 14
+    role: [anchor, check]
+    parameters_anchored: [hr_day_to_day_variability, between_person_spread, weekday_effect, gap_lengths]
+    checks: [baseline_under_missingness, false_alarm_proxy]
+  dryad_24h:              # 30 volunteers, one 24 h period with ambulatory BP
+    baseline_days: null   # a single day: no personal baseline possible
+    role: [anchor, check]
+    parameters_anchored: [sleep_wake_bp_hr_difference, bp_sampling_pattern, bp_noise]
+    checks: [context_variance_explained]
+    never_apply: [reference_event]   # ambulatory BP thresholds differ from clinic thresholds
+  framingham_teaching:
+    baseline_days: null
+    role: [anchor]
+    parameters_anchored: [sbp_dbp_hr_distribution, age_sex_correlations]
+    caution: "If predicting hypertension, exclude SBP/DBP as features (label leakage)."

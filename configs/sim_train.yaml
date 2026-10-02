@@ -1,0 +1,38 @@
+# Simulator config: train / calibration regime (Spec Section 4)
+name: sim_train
+n_subjects: 300
+n_days: 180
+drifter_fraction: 0.5
+population:
+  hr_rest:  {mean: 68.0, sd: 9.0, min: 50.0, max: 90.0}
+  hrv_rmssd_median: 40.0
+  hrv_log_sd: 0.35
+  hr_hrv_corr: -0.5
+  sbp: {mean: 118.0, sd: 8.0}
+  dbp: {mean: 74.0, sd: 6.0}
+  nondrifter_sbp_cap: 124.0     # latent SBP kept below the reference threshold
+  nondrifter_dbp_cap: 77.0
+drift:
+  onset_range: [45, 110]
+  shapes: [linear, sigmoid]
+  delta_sbp: [8.0, 20.0]
+  delta_dbp: [4.0, 10.0]
+  delta_hr: [3.0, 8.0]
+  delta_hrv_frac: [-0.25, -0.10]
+  event_window: [20, 175]       # T_ref must fall in [onset+20, 175]
+confounders:
+  exercise_block: {rate_per_subject: 1.2, duration_days: [7, 21]}
+  illness:        {rate_per_subject: 1.0, duration_days: [3, 10]}
+  poor_sleep:     {rate_per_subject: 1.0, duration_days: [5, 14]}
+  seasonal_shift: {rate_per_subject: 0.6, duration_days: [14, 28]}
+  stress_day:     {rate_per_subject: 4.0, duration_days: [1, 2]}
+measurement:
+  bp_readings_per_day: [1, 3]
+  bp_gap_prob: 0.25             # probability a day has no BP reading
+  bp_noise_sd: 5.0
+  noise_level: medium           # low | medium | high
+corruption:
+  mcar_rate: 0.08
+  block_missing: {rate_per_subject: 1.5, duration_days: [1, 7]}
+  modality_dropout: {rate_per_subject: 0.5, duration_days: [7, 21]}
+  motion_artifact_prob: {walk: 0.05, exercise: 0.30}

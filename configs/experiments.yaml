@@ -1,0 +1,15 @@
+# Experiment registry (Spec Section 8). Each experiment = one RQ, one controlled change.
+experiments:
+  exp1_personalization: {rq: RQ1, compare: [M0, M1]}
+  exp2_temporal:        {rq: RQ2, compare: [M1, M2]}
+  exp3_context:         {rq: RQ4, compare: [M2, M3]}
+  exp4_robustness:      {rq: RQ5, compare: [M3, M4]}
+  exp5_uncertainty:     {rq: RQ6, compare: [M4, M5]}
+  exp6_early_warning:   {rq: RQ3, compare: [M0, M1, M2, M3, M4, M5]}
+  exp7_failure_cases:   {rq: all}
+  exp8_shifted_regime:  {rq: all, data: sim_shifted}
+robustness_grid:
+  missing_rates: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5]
+  noise_multipliers: [1, 2, 3]
+  bp_per_day: [3, 1, 0.14]
+  modality_dropout: [none, hrv, bp, both]

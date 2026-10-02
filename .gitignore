@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+data/generated/*
+!data/generated/.gitkeep
+*.egg-info/
+.ipynb_checkpoints/
+src/biovance/data/raw/pmdata/

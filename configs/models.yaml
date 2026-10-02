@@ -1,0 +1,8 @@
+# Tunable hyperparameters. Selected on CALIBRATION subjects only; never frozen.
+personalization:
+  shrinkage_n0_grid: [7, 14, 28, 56]
+  baseline_window_grid_days: [14, 21, 28, 42]
+temporal:
+  ewma_alpha_grid: [0.1, 0.2, 0.3]
+  slope_windows_days: [14, 28]
+learners: [logistic, lightgbm]

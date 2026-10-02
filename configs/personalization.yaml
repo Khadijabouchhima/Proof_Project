@@ -1,0 +1,31 @@
+# Personalization engine settings. Column names are ALIASES so the engine survives changes in the
+# upstream data pipeline. Baseline window length comes from simulator.yaml / real_checks.yaml
+# (single source of truth), never from here.
+columns:
+  patient_id: [patient_id, subject_id, participant_id, id]
+  timestamp: [timestamp, ts, datetime, date_time, time]
+  signal_quality: [signal_quality, quality]
+  context: [context, activity_state, state]
+context_map:                    # canonical label -> accepted raw labels (case-insensitive)
+  rest: [rest, resting, sedentary, sitting, lying, still]
+  active: [active, walk, walking, exercise, running, activity]
+  sleep: [sleep, sleeping, asleep]
+min_quality: 0.5                # observations below this are ineligible for baselines and scores
+nan_quality_ok: false           # a value with unknown quality is treated as ineligible
+signals:                        # orientation: +1 risk when value rises, -1 when it falls, 0 two-sided
+  hr:   {aliases: [hr, heart_rate], orientation: 1,  min_obs_per_day: 3, baseline_contexts: [rest],
+         quality_aliases: [hr_quality]}
+  hrv:  {aliases: [hrv, rmssd, sdnn], orientation: -1, min_obs_per_day: 1, baseline_contexts: [rest, sleep],
+         quality_aliases: [hrv_quality]}
+  sbp:  {aliases: [sbp, systolic, systolic_bp], orientation: 1, min_obs_per_day: 1, baseline_contexts: null,
+         quality_aliases: [bp_quality]}
+  dbp:  {aliases: [dbp, diastolic, diastolic_bp], orientation: 1, min_obs_per_day: 1, baseline_contexts: null,
+         quality_aliases: [bp_quality]}
+  spo2: {aliases: [spo2], orientation: -1, min_obs_per_day: 1, baseline_contexts: [rest, sleep],
+         quality_aliases: [spo2_quality]}
+defaults:
+  mode: shrunk                  # population | center | center_scale | shrunk   (ablation P0..P3)
+  shrinkage_n0: 14              # scale-shrinkage strength; TUNED on calibration subjects (models.yaml grid)
+  scale_floor_frac: 0.25        # personal scale never below this fraction of the population scale
+  context_mode: none            # none (M1) | rest_only (M3)
+  score_during_window: false    # days inside the baseline window are not scored, in every mode

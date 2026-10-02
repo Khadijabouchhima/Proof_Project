@@ -1,0 +1,35 @@
+columns:
+  patient_id: [patient_id, subject_id, participant_id, id]
+  timestamp: [timestamp, ts, datetime]
+  signal_quality: [signal_quality, quality]
+
+thresholds:
+  min_quality: 0.5
+  good_quality: 0.8
+
+coverage:
+  min_obs_per_day: 3
+  min_valid_days: 7
+
+physiology:
+
+  hr:
+    min: 30
+    max: 220
+
+  sbp:
+    min: 70
+    max: 250
+
+  dbp:
+    min: 40
+    max: 150
+
+  hrv:
+    min: 1
+    max: 300
+
+states:
+  good: 0.8
+  acceptable: 0.6
+  poor: 0.3

@@ -1,0 +1,31 @@
+ID,CGM? Yes/No,Issue reported/known?,Zephyr unit,BP monitor,BP cuff,ECG setup
+1,Y,N,BHT052124,1 (227-014914),Regular,electrodes
+2,N,N,BHT052124,1 (227-014914),Regular,electrodes
+3,N,N,BHT052124,1 (227-014914),Regular,electrodes
+4,N,N,BHT056204,3 (227-020929),Regular,electrodes
+5,N,N,BHT052162,2 (227-020930),Regular,strap
+6,N,Poor ECG contact,BHT052124 ,1 (227-014914),Regular,electrodes
+7,Y,No nigt BP,BHT052124 ,3 (227-020929),Regular,strap
+8,Y,N,BHT052124 ,3 (227-020929),Regular,strap
+9,Y,BP inflation error,BHT052124   ,3 (227-020929),Large,electrodes
+10,Y,N,BHT052124   ,3 (227-020929),Large,electrodes
+11,Y,N,BHT058212 ,1 (227-014914),Regular,electrodes
+12,Y,N,BHT052124   ,3 (227-020929),Regular,electrodes
+13,Y,N,BHT058212 ,1 (227-014914),Regular,electrodes
+14,Y,No night BP,BHT058212 ,1 (227-014914),Large,electrodes
+15,Y,N,BHT058212,1 (227-014914),Regular,electrodes
+16,Y,N,BHT052124,1 (227-014914),Regular,electrodes
+17,Y,N,BHT059908 ,1 (227-014914),Regular,electrodes
+18,Y,N,BHT056204 ,2 (227-020930),Regular,electrodes
+19,Y,"No night BP, replaced ECG electrodes",BHT056204 ,1 (227-014914),Regular,electrodes
+20,N,"BP cuff removed during night, CGM sensor error",BHT052124   ,1 (227-014914),Regular,electrodes
+21,Y,N,BHT052124   ,1 (227-014914),Regular,electrodes
+22,Y,Strap displaced at times,BHT056204 ,2 (227-020930),Regular,strap
+23,Y,N,BHT056204 ,2 (227-020930),Regular,electrodes
+24,Y,N,BHT056204,2 (227-020930),Regular,electrodes
+25,N,N,BHT052124 ,1 (227-014914),Regular,electrodes
+26,Y,N,BHT052124 ,1 (227-014914),Regular,electrodes
+27,N,CGM sensor fail (few hours data only),BHT056204,2 (227-020930),Regular,electrodes
+28,Y,N,BHT000561,1 (227-014914),Regular,electrodes
+29,Y,N,BHT059908,2 (227-020930),Regular,electrodes
+30,Y,N,BHT000561 ,1 (227-014914),Regular,electrodes

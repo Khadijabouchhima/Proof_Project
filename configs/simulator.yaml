@@ -1,0 +1,15 @@
+# Simulator-benchmark rules (frozen). Generation parameters are in sim_train.yaml / sim_shifted.yaml.
+reference_source: clinic_process   # T_ref comes from a clean clinic-visit process stored in truth,
+                                   # never from the (corrupted) wearable BP stream
+baseline:
+  window_days: 28
+  min_valid_days: 14
+  min_bp_readings: 6
+splits:
+  level: subject
+  train: 0.6
+  calibration: 0.2
+  test: 0.2
+  regenerate_cohort_per_seed: true
+  pool_test_across_seeds: true
+seeds: [0, 1, 2, 3, 4]

@@ -1,0 +1,29 @@
+# GLOBAL BIOVANCE (certAIn) definitions, v2.1.
+# Shared by the simulator benchmark AND the real-data checks.
+# Dataset-specific rules live elsewhere:
+#   configs/simulator.yaml   benchmark rules (clean T_ref source, baseline, splits, seeds)
+#   configs/real_checks.yaml real-dataset rules (what each dataset may be used for)
+#   configs/sim_train.yaml / sim_shifted.yaml   generation parameters
+#   configs/models.yaml      tunable model hyperparameters (NOT frozen)
+task:
+  horizon_days: 30
+  min_lead_days: 7              # single authoritative value: useful warning needs T_w <= T_ref - 7
+  reference:
+    sbp: 130
+    dbp: 80
+    consecutive_readings: 2     # adjacent readings in the reference sequence (see docs/definitions.md)
+    maximum_gap_days: 7         # max days between ADJACENT qualifying readings
+  sensitivity_reference:
+    sbp: 140
+    dbp: 90
+    consecutive_readings: 2
+    maximum_gap_days: 7
+warning:
+  persistence_k: 3
+  refractory_days: 14
+  false_alarm_budgets_per_subject_month: [0.1, 0.3, 0.5]
+  primary_false_alarm_budget: 0.3
+states: [NORMAL, EMERGING_RISK, INSUFFICIENT_EVIDENCE, POOR_QUALITY]
+statistics:
+  bootstrap_resamples: 1000
+  ci_level: 0.95
