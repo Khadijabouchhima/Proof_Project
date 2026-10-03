@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import time
-from pathlib import Path
-
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -16,42 +13,37 @@ from live_pipeline import (
 
 
 st.set_page_config(
-    page_title="BioVance Live Simulator",
+    page_title="PROOF Live Demonstrator",
+    page_icon="",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
 
 
-# ============================================================
+# ---------------------------------------------------------------------
 # Helpers
-# ============================================================
+# ---------------------------------------------------------------------
 
-def first_value(
-    mapping: dict,
-    names: tuple[str, ...],
-    default="Unavailable",
-):
+def first_value(mapping: dict, names: tuple[str, ...], default="—"):
+    if not isinstance(mapping, dict):
+        return default
     for name in names:
         value = mapping.get(name)
-        if value is not None:
-            try:
-                if pd.isna(value):
-                    continue
-            except Exception:
-                pass
-            return value
+        if value is None:
+            continue
+        try:
+            if pd.isna(value):
+                continue
+        except Exception:
+            pass
+        return value
     return default
 
 
-def fmt(
-    value,
-    decimals=3,
-):
-    if value == "Unavailable":
-        return value
+def fmt(value, decimals: int = 3) -> str:
     try:
         if pd.isna(value):
-            return "Unavailable"
+            return "—"
     except Exception:
         pass
     try:
@@ -60,470 +52,354 @@ def fmt(
         return str(value)
 
 
-def current_decision(result: dict) -> str:
-    d = result.get("decision", {})
+def decision_state(result: dict | None) -> str:
+    if not result:
+        return "WAITING"
     return str(
         first_value(
-            d,
-            (
-                "decision_state",
-                "decision",
-                "state",
-            ),
-            "MONITOR",
+            result.get("decision", {}),
+            ("decision_state", "decision", "state"),
+            "WAITING",
         )
     )
 
 
-# ============================================================
-# Session state
-# ============================================================
+def init():
+    if "pipeline" not in st.session_state:
+        with st.spinner("Learning the synthetic patient's personal baseline..."):
+            st.session_state.pipeline = RealBioVanceLivePipeline(
+                SyntheticPatient()
+            )
 
-if "pipeline" not in st.session_state:
-    st.session_state.pipeline = RealBioVanceLivePipeline(
-        SyntheticPatient()
-    )
+    if "scenario" not in st.session_state:
+        st.session_state.scenario = "Gradual deterioration"
 
-if "sim" not in st.session_state:
+    if "sim" not in st.session_state:
+        st.session_state.sim = SimulatorState(
+            patient=st.session_state.pipeline.patient,
+            scenario=st.session_state.scenario,
+        )
+
+    if "results" not in st.session_state:
+        st.session_state.results = []
+
+
+def reset(scenario: str):
+    st.session_state.pipeline.reset()
     st.session_state.sim = SimulatorState(
-        patient=st.session_state.pipeline.patient
+        patient=st.session_state.pipeline.patient,
+        scenario=scenario,
     )
-
-if "running" not in st.session_state:
-    st.session_state.running = False
-
-if "results" not in st.session_state:
     st.session_state.results = []
-
-if "scenario" not in st.session_state:
-    st.session_state.scenario = "Gradual deterioration"
+    st.session_state.scenario = scenario
 
 
-# ============================================================
-# Controls
-# ============================================================
+def advance_one():
+    sim = st.session_state.sim
+    obs = generate_next_observation(sim)
+    result = st.session_state.pipeline.process(obs)
 
-st.title("BioVance")
-st.subheader("Live synthetic patient → real BioVance engines")
+    sim.history = pd.concat(
+        [sim.history, pd.DataFrame([obs])],
+        ignore_index=True,
+    )
+    sim.tick += 1
+    st.session_state.results.append(result)
+
+
+def run_steps(n: int):
+    for _ in range(n):
+        advance_one()
+
+
+init()
+
+
+# ---------------------------------------------------------------------
+# Header
+# ---------------------------------------------------------------------
+
+st.title("PROOF")
+st.subheader("Personalized Robust Observation Framework — live demonstrator")
 
 st.caption(
-    "The measurements are synthetic. The downstream pipeline "
-    "uses the frozen BioVance engine classes from src/biovance."
+    "The patient stream is synthetic. The live path executes the real "
+    "Personalization, Deviation, Temporal, Fusion, Uncertainty, Decision, "
+    "and Explainability engines. Quality values and REST context are "
+    "synthetic bridge metadata in this demo; background Framingham risk is "
+    "left unavailable rather than fabricated."
 )
 
 scenario = st.selectbox(
     "Scenario",
-    [
+    (
         "Stable physiology",
         "Gradual deterioration",
         "Conflicting signals",
         "Sensor dropout",
-    ],
-    index=1,
+    ),
+    index=(
+        (
+            "Stable physiology",
+            "Gradual deterioration",
+            "Conflicting signals",
+            "Sensor dropout",
+        ).index(st.session_state.scenario)
+    ),
 )
-
-speed = st.select_slider(
-    "Speed",
-    options=[
-        "Slow",
-        "Normal",
-        "Fast",
-    ],
-    value="Normal",
-)
-
-c1, c2, c3 = st.columns(3)
-
-if c1.button(
-    "Start",
-    use_container_width=True,
-):
-    st.session_state.running = True
-
-if c2.button(
-    "Pause",
-    use_container_width=True,
-):
-    st.session_state.running = False
-
-if c3.button(
-    "Reset",
-    use_container_width=True,
-):
-    st.session_state.running = False
-    st.session_state.results = []
-    st.session_state.sim = SimulatorState(
-        patient=st.session_state.pipeline.patient,
-        scenario=scenario,
-    )
-    st.session_state.pipeline.reset()
-
 
 if scenario != st.session_state.scenario:
-    st.session_state.scenario = scenario
-    st.session_state.running = False
-    st.session_state.results = []
-    st.session_state.sim = SimulatorState(
-        patient=st.session_state.pipeline.patient,
-        scenario=scenario,
-    )
-    st.session_state.pipeline.reset()
+    reset(scenario)
 
+c1, c2, c3 = st.columns(3)
+if c1.button("Advance one observation", use_container_width=True):
+    try:
+        advance_one()
+    except Exception as exc:
+        st.error("A real PROOF engine rejected the live bridge input.")
+        st.exception(exc)
+
+if c2.button("Run 12 observations", use_container_width=True):
+    try:
+        run_steps(12)
+    except Exception as exc:
+        st.error("A real PROOF engine rejected the live bridge input.")
+        st.exception(exc)
+
+if c3.button("Reset scenario", use_container_width=True):
+    reset(scenario)
+    st.rerun()
 
 st.divider()
 
 
-# ============================================================
-# Live update fragment
-# ============================================================
+# ---------------------------------------------------------------------
+# Baseline
+# ---------------------------------------------------------------------
 
-intervals = {
-    "Slow": 2.0,
-    "Normal": 1.0,
-    "Fast": 0.45,
-}
-
-
-@st.fragment(run_every=0.45)
-def live_view():
-    sim = st.session_state.sim
-    sim.scenario = st.session_state.scenario
-
-    # Generate ONE genuinely new raw observation per refresh.
-    if st.session_state.running:
-        now = time.monotonic()
-
-        last_emit = st.session_state.get(
-            "last_emit",
-            0.0,
+with st.expander("Personal baseline learned by the real Personalization Engine"):
+    base = st.session_state.pipeline.baseline_summary()
+    cols = st.columns(4)
+    labels = {
+        "hr": ("HR", "bpm"),
+        "hrv": ("HRV", "ms"),
+        "sbp": ("SBP", "mmHg"),
+        "dbp": ("DBP", "mmHg"),
+    }
+    for col, key in zip(cols, ("hr", "hrv", "sbp", "dbp")):
+        label, unit = labels[key]
+        col.metric(
+            label,
+            f"{base[key]['center']:.1f} {unit}",
+            help=f"Robust learned scale: {base[key]['scale']:.2f}",
         )
 
-        if now - last_emit >= intervals[speed]:
-            observation = generate_next_observation(sim)
 
-            try:
-                result = st.session_state.pipeline.process(
-                    observation
-                )
-            except Exception as exc:
-                st.session_state.running = False
-                st.error(
-                    "The simulator reached a real BioVance engine, "
-                    "but the local engine contract did not match the "
-                    "bridge input."
-                )
-                st.exception(exc)
-                st.stop()
+sim = st.session_state.sim
+results = st.session_state.results
+final = results[-1] if results else None
 
-            sim.history = pd.concat(
-                [
-                    sim.history,
-                    pd.DataFrame([observation]),
-                ],
-                ignore_index=True,
-            )
+top1, top2, top3 = st.columns([2, 1, 1])
+top1.markdown("### Synthetic Patient A")
+top1.caption(
+    f"{scenario} · every observation represents 30 minutes of patient time"
+)
+top2.metric("Observations", sim.tick)
+top3.metric("Current decision", decision_state(final))
 
-            sim.tick += 1
 
-            st.session_state.results.append(result)
-            st.session_state.last_emit = now
+# ---------------------------------------------------------------------
+# Physiology
+# ---------------------------------------------------------------------
 
-    # --------------------------------------------------------
-    # Patient / latest signal values
-    # --------------------------------------------------------
-    left, middle, right = st.columns(
-        [2, 1, 1]
+st.markdown("### 1. Live physiology")
+
+latest = (
+    sim.history.iloc[-1].to_dict()
+    if not sim.history.empty
+    else {"HR": np.nan, "HRV": np.nan, "SBP": np.nan, "DBP": np.nan}
+)
+
+cols = st.columns(4)
+for col, (field, label, unit) in zip(
+    cols,
+    (
+        ("HR", "Heart rate", "bpm"),
+        ("SBP", "Systolic BP", "mmHg"),
+        ("DBP", "Diastolic BP", "mmHg"),
+        ("HRV", "HRV", "ms"),
+    ),
+):
+    value = latest.get(field, np.nan)
+    col.metric(
+        label,
+        "Unavailable"
+        if pd.isna(value)
+        else f"{float(value):.1f} {unit}",
     )
 
-    left.subheader("Simulated Patient A")
-    left.caption(
-        "Synthetic measurements · personal baseline learned "
-        "by the real Personalization Engine"
+if not sim.history.empty:
+    st.line_chart(
+        sim.history.set_index("timestamp")[["HR", "SBP", "DBP", "HRV"]],
+        height=280,
     )
 
-    middle.metric(
-        "Generated observations",
-        sim.tick,
+if final is None:
+    st.info(
+        "Advance one observation or run 12 observations. The first points stay "
+        "close to the learned baseline before the selected scenario develops."
     )
+    st.stop()
 
-    if st.session_state.results:
-        final = st.session_state.results[-1]
-        decision = current_decision(final)
-    else:
-        final = None
-        decision = "Waiting"
 
-    right.metric(
-        "Current decision",
-        decision,
-    )
+# ---------------------------------------------------------------------
+# Pipeline
+# ---------------------------------------------------------------------
 
-    # --------------------------------------------------------
-    # Live signals
-    # --------------------------------------------------------
-    st.markdown("### Live physiology")
+st.markdown("### 2. What the engines see now")
 
-    signal_cols = st.columns(4)
+deviation_df = final["deviation_current"]
+temporal_df = final["temporal_current"]
+fusion = final["fusion"]
+uncertainty = final["uncertainty"]
+decision = final["decision"]
+explanation = final["explanation"]
 
-    if sim.history.empty:
-        latest = {
-            "HR": np.nan,
-            "SBP": np.nan,
-            "DBP": np.nan,
-            "HRV": np.nan,
-        }
-    else:
-        latest = sim.history.iloc[-1]
+p1, p2, p3 = st.columns(3)
 
-    for col, field, label, unit in zip(
-        signal_cols,
-        ["HR", "SBP", "DBP", "HRV"],
-        [
-            "Heart rate",
-            "Systolic BP",
-            "Diastolic BP",
-            "HRV",
-        ],
-        [
-            "bpm",
-            "mmHg",
-            "mmHg",
-            "ms",
-        ],
-    ):
-        value = latest[field]
-        if pd.isna(value):
-            col.metric(label, "Unavailable")
-        else:
-            col.metric(
-                label,
-                f"{float(value):.1f} {unit}",
-            )
-
-    if not sim.history.empty:
-        chart = sim.history[
-            [
-                "timestamp",
-                "HR",
-                "SBP",
-                "DBP",
-                "HRV",
-            ]
-        ].copy()
-
-        chart = chart.set_index(
-            "timestamp"
-        )
-
-        st.line_chart(
-            chart,
-            height=300,
-        )
-
-    st.divider()
-
-    # --------------------------------------------------------
-    # Real pipeline states
-    # --------------------------------------------------------
-    st.markdown("### Real BioVance pipeline")
-
-    if final is None:
-        st.info(
-            "Press Start. A new synthetic observation will be "
-            "generated and passed through the real engines."
-        )
-        return
-
-    deviation_df = final[
-        "deviation_current"
-    ]
-
-    temporal_df = final[
-        "temporal_current"
-    ]
-
-    fusion = final["fusion"]
-    uncertainty = final["uncertainty"]
-    decision_map = final["decision"]
-    explanation = final["explanation"]
-
-    # Personalized deviation
-    deviation_states = []
-
-    if (
-        isinstance(deviation_df, pd.DataFrame)
-        and not deviation_df.empty
-    ):
-        for _, row in deviation_df.iterrows():
-            signal = str(
-                row.get(
-                    "signal",
-                    "?",
-                )
-            ).upper()
-
-            status = str(
-                row.get(
-                    "deviation_status",
-                    row.get(
+with p1:
+    with st.container(border=True):
+        st.markdown("**Personalization → Deviation**")
+        if isinstance(deviation_df, pd.DataFrame) and not deviation_df.empty:
+            for _, row in deviation_df.iterrows():
+                signal = str(row.get("signal", "?")).upper()
+                state = first_value(
+                    row.to_dict(),
+                    (
+                        "deviation_state",
+                        "deviation_status",
+                        "deviation_level",
                         "deviation_code",
-                        "UNKNOWN",
                     ),
+                    "UNKNOWN",
                 )
-            )
-
-            deviation_states.append(
-                f"{signal}: {status}"
-            )
-
-    # Temporal
-    temporal_states = []
-
-    if (
-        isinstance(temporal_df, pd.DataFrame)
-        and not temporal_df.empty
-    ):
-        for _, row in temporal_df.iterrows():
-            signal = str(
-                row.get(
-                    "signal",
-                    "?",
+                score = first_value(
+                    row.to_dict(),
+                    ("risk_aligned_score", "z", "deviation_score"),
+                    None,
                 )
-            ).upper()
+                text = f"{signal}: {state}"
+                if score is not None:
+                    text += f" · score {fmt(score, 2)}"
+                st.write(text)
+        else:
+            st.write("No usable deviation yet")
 
-            state = str(
-                row.get(
-                    "temporal_state",
-                    row.get(
-                        "temporal_code",
-                        "UNKNOWN",
-                    ),
+with p2:
+    with st.container(border=True):
+        st.markdown("**Temporal**")
+        if isinstance(temporal_df, pd.DataFrame) and not temporal_df.empty:
+            for _, row in temporal_df.iterrows():
+                signal = str(row.get("signal", "?")).upper()
+                state = first_value(
+                    row.to_dict(),
+                    ("temporal_state", "temporal_status", "temporal_code"),
+                    "UNKNOWN",
                 )
-            )
+                st.write(f"{signal}: {state}")
+        else:
+            st.write("No current temporal evidence yet")
 
-            temporal_states.append(
-                f"{signal}: {state}"
-            )
-
-    p1, p2, p3 = st.columns(3)
-
-    with p1:
-        with st.container(border=True):
-            st.markdown("**Personalization + Deviation**")
-            if deviation_states:
-                for line in deviation_states:
-                    st.write(line)
-            else:
-                st.write("No usable deviation yet")
-
-    with p2:
-        with st.container(border=True):
-            st.markdown("**Temporal**")
-            if temporal_states:
-                for line in temporal_states:
-                    st.write(line)
-            else:
-                st.write("Insufficient temporal evidence")
-
-    with p3:
-        with st.container(border=True):
-            st.markdown("**Fusion**")
+with p3:
+    with st.container(border=True):
+        st.markdown("**Fusion**")
+        if final.get("fusion_available", False):
             st.metric(
                 "State",
-                first_value(
-                    fusion,
-                    ("fusion_state",),
-                ),
+                first_value(fusion, ("fusion_state",), "UNKNOWN"),
             )
             st.caption(
                 "Score: "
-                + fmt(
-                    first_value(
-                        fusion,
-                        ("fusion_score",),
-                    )
-                )
+                + fmt(first_value(fusion, ("fusion_score",), np.nan))
+                + " · confidence: "
+                + fmt(first_value(fusion, ("fusion_confidence",), np.nan))
+            )
+        else:
+            st.metric("State", "UNAVAILABLE")
+            st.caption(
+                "The current moment did not produce a Fusion row. "
+                "A previous Fusion result is never reused."
             )
 
-    p4, p5 = st.columns(2)
+p4, p5, p6 = st.columns(3)
 
-    with p4:
-        with st.container(border=True):
-            st.markdown("**Uncertainty**")
-            st.metric(
-                "Level",
+with p4:
+    with st.container(border=True):
+        st.markdown("**Background risk**")
+        st.metric("Live risk", "Not connected")
+        st.caption(
+            "Framingham risk is intentionally not fabricated for the synthetic "
+            "live patient. The validated risk engine remains a separate branch."
+        )
+
+with p5:
+    with st.container(border=True):
+        st.markdown("**Uncertainty**")
+        st.metric(
+            "Level",
+            first_value(
+                uncertainty,
+                ("uncertainty_level", "level"),
+                "UNKNOWN",
+            ),
+        )
+        st.caption(
+            "Score: "
+            + fmt(
                 first_value(
                     uncertainty,
-                    (
-                        "uncertainty_level",
-                        "level",
-                    ),
-                ),
-            )
-            st.caption(
-                "Score: "
-                + fmt(
-                    first_value(
-                        uncertainty,
-                        (
-                            "uncertainty_score",
-                            "uncertainty",
-                        ),
-                    )
+                    ("uncertainty_score", "uncertainty"),
+                    np.nan,
                 )
             )
+        )
 
-    with p5:
-        with st.container(border=True):
-            st.markdown("**Decision**")
-            state = current_decision(final)
-            st.metric("State", state)
-
-            reason = first_value(
-                decision_map,
-                (
-                    "decision_code",
-                    "primary_reason",
-                    "decision_reason",
-                ),
-                "",
-            )
-
-            if reason:
-                st.caption(str(reason))
-
-    st.divider()
-
-    st.markdown("### Why?")
-
-    explanation_text = first_value(
-        explanation,
-        (
-            "explanation_summary",
-            "primary_reason",
-            "explanation",
-        ),
-        "The real Explainability Engine did not emit a "
-        "human-readable field for this row.",
-    )
-
-    if decision == "WARN":
-        st.error(str(explanation_text))
-    elif decision == "ABSTAIN":
-        st.info(str(explanation_text))
-    else:
-        st.warning(str(explanation_text))
-
-    st.caption(
-        "Synthetic source only. No DRYAD or Framingham row is "
-        "being replayed in this live simulation."
-    )
+with p6:
+    with st.container(border=True):
+        st.markdown("**Decision**")
+        state = decision_state(final)
+        st.metric("State", state)
+        reason = first_value(
+            decision,
+            ("decision_code", "primary_reason", "decision_reason"),
+            "",
+        )
+        if reason:
+            st.caption(str(reason))
 
 
-live_view()
+# ---------------------------------------------------------------------
+# Why
+# ---------------------------------------------------------------------
 
-st.divider()
-st.caption(
-    "BioVance research prototype · Synthetic patient stream · "
-    "Not a diagnostic system"
+st.markdown("### 3. Why did PROOF choose this state?")
+
+explanation_text = first_value(
+    explanation,
+    ("explanation_summary", "primary_reason", "explanation"),
+    "The Explainability Engine did not emit a recognized text field.",
 )
+
+state = decision_state(final)
+if state == "WARN":
+    st.error(str(explanation_text))
+elif state == "ABSTAIN":
+    st.info(str(explanation_text))
+else:
+    st.warning(str(explanation_text))
+
+st.caption(
+    "Presentation prototype · synthetic source only · no DRYAD or Framingham "
+    "participant is being replayed · not a diagnostic system"
+)
+
