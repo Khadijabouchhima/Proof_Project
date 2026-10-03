@@ -1,0 +1,14 @@
+version: "decision_v1"
+
+thresholds:
+  abstain_uncertainty: 0.60
+  warn_max_uncertainty: 0.40
+
+  strong_fusion_warn: 0.75
+  fusion_warn_with_risk: 0.60
+
+  background_risk_context: 0.20
+
+warn_fusion_states:
+  - MULTIMODAL_SUPPORT
+  - MULTIMODAL_CONSENSUS

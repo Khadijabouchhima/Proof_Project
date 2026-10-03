@@ -1,0 +1,15 @@
+version: "uncertainty_v1"
+
+weights:
+  fusion_confidence: 0.40
+  risk_completeness: 0.25
+  source_coverage: 0.20
+  coherence: 0.15
+
+expected_sources:
+  - fusion
+  - risk
+
+thresholds:
+  high_uncertainty: 0.60
+  moderate_uncertainty: 0.30

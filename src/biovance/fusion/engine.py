@@ -15,6 +15,19 @@ Fusion does NOT:
 - calculate clinical risk
 - issue WARN / MONITOR / ABSTAIN
 
+Atomic evaluation rule
+----------------------
+Fusion evaluates one physiological moment at a time.
+
+All signal rows sharing the same:
+
+    patient_id + timestamp
+
+are treated as simultaneous observations and are evaluated together.
+
+This prevents the order of signal rows at the same timestamp from changing
+the Fusion result.
+
 All fusion calculations at time t use observations with timestamp <= t.
 """
 
@@ -44,9 +57,7 @@ class FusionEngine:
         self,
         config: FusionConfig,
     ):
-
         self.config = config
-
         self.config.validate()
 
     @classmethod
@@ -54,7 +65,6 @@ class FusionEngine:
         cls,
         path: str | Path,
     ) -> "FusionEngine":
-
         return cls(
             load_fusion_config(
                 path
@@ -69,6 +79,17 @@ class FusionEngine:
         self,
         df: pd.DataFrame,
     ) -> pd.DataFrame:
+        """
+        Produce one Fusion result per patient/timestamp.
+
+        All signals observed at the same timestamp are considered
+        simultaneously.
+
+        This is intentionally different from scoring each long-format
+        signal row independently. Fusion is a multisignal engine, so its
+        natural evaluation unit is a physiological moment rather than an
+        individual signal row.
+        """
 
         validate_fusion_input(
             df
@@ -84,7 +105,6 @@ class FusionEngine:
         if work[
             "timestamp"
         ].isna().any():
-
             raise ValueError(
                 "Fusion input contains invalid timestamps."
             )
@@ -104,6 +124,7 @@ class FusionEngine:
             .str.lower()
         )
 
+        # Stable order used only for deterministic processing.
         work[
             "_fusion_original_index"
         ] = np.arange(
@@ -137,6 +158,7 @@ class FusionEngine:
                 .sort_values(
                     [
                         "timestamp",
+                        "signal",
                         "_fusion_original_index",
                     ]
                 )
@@ -145,45 +167,95 @@ class FusionEngine:
                 )
             )
 
-            for position in range(
-                len(patient)
-            ):
-
-                current = patient.iloc[
-                    position
+            timestamps = (
+                patient[
+                    "timestamp"
                 ]
+                .drop_duplicates()
+                .sort_values()
+                .tolist()
+            )
 
-                history = patient.iloc[
-                    : position + 1
+            for current_time in timestamps:
+
+                # ------------------------------------------------
+                # All rows belonging to this physiological moment.
+                # ------------------------------------------------
+                current_rows = patient[
+                    patient[
+                        "timestamp"
+                    ]
+                    == current_time
                 ].copy()
 
-                result = self._score_row(
-                    current=current,
-                    history=history,
+                # ------------------------------------------------
+                # IMPORTANT:
+                #
+                # History includes ALL observations at the current
+                # timestamp, not merely the rows encountered before
+                # the current signal in sort order.
+                # ------------------------------------------------
+                history = patient[
+                    patient[
+                        "timestamp"
+                    ]
+                    <= current_time
+                ].copy()
+
+                context = self._moment_context(
+                    current_rows
                 )
 
-                row = current.to_dict()
+                result = self._score_moment(
+                    current_rows=current_rows,
+                    history=history,
+                    current_time=current_time,
+                    context=context,
+                )
 
-                row.update(
+                current_signals = sorted(
+                    current_rows[
+                        "signal"
+                    ]
+                    .dropna()
+                    .astype(str)
+                    .unique()
+                    .tolist()
+                )
+
+                output_row = {
+                    "patient_id": patient_id,
+                    "timestamp": current_time,
+                    "context_state": context,
+                    "current_signal_count": len(
+                        current_signals
+                    ),
+                    "current_signals": json.dumps(
+                        current_signals
+                    ),
+                }
+
+                output_row.update(
                     result
                 )
 
                 output_rows.append(
-                    row
+                    output_row
                 )
 
         result = pd.DataFrame(
             output_rows
         )
 
+        if result.empty:
+            return result
+
         result = (
             result
             .sort_values(
-                "_fusion_original_index"
-            )
-            .drop(
-                columns=[
-                    "_fusion_original_index"
+                [
+                    "patient_id",
+                    "timestamp",
                 ]
             )
             .reset_index(
@@ -194,50 +266,66 @@ class FusionEngine:
         return result
 
     # ========================================================
-    # Row scoring
+    # Moment scoring
     # ========================================================
 
-    def _score_row(
+    def _score_moment(
         self,
-        current: pd.Series,
+        current_rows: pd.DataFrame,
         history: pd.DataFrame,
+        current_time: pd.Timestamp,
+        context,
     ) -> dict:
 
-        if (
-            "phase"
-            in current.index
-            and pd.notna(
-                current.get(
-                    "phase"
-                )
-            )
-            and str(
-                current.get(
-                    "phase"
-                )
-            ).upper()
-            != "EVALUATION"
-        ):
+        # ----------------------------------------------------
+        # Evaluation phase
+        # ----------------------------------------------------
+        if "phase" in current_rows.columns:
 
-            return self._empty_result(
-                code=FusionCode.NOT_EVALUATION,
-                explanation=(
-                    "Fusion unavailable because the current "
-                    "row is not an evaluation observation."
-                ),
-                reasons=[
-                    "CURRENT_ROW_NOT_EVALUATION",
-                ],
-            )
-
-        if (
-            str(
-                current[
-                    "temporal_code"
+            phases = (
+                current_rows[
+                    "phase"
                 ]
+                .dropna()
+                .astype(str)
+                .str.upper()
             )
-            not in self.config.usable_temporal_codes
-        ):
+
+            if (
+                len(phases) > 0
+                and not (
+                    phases
+                    == "EVALUATION"
+                ).any()
+            ):
+                return self._empty_result(
+                    code=FusionCode.NOT_EVALUATION,
+                    explanation=(
+                        "Fusion unavailable because this "
+                        "physiological moment is not part of "
+                        "the evaluation phase."
+                    ),
+                    reasons=[
+                        "CURRENT_MOMENT_NOT_EVALUATION",
+                    ],
+                )
+
+        # ----------------------------------------------------
+        # At least one current signal must have usable
+        # temporal evidence.
+        # ----------------------------------------------------
+        current_temporal_usable = (
+            current_rows[
+                "temporal_code"
+            ]
+            .astype(str)
+            .isin(
+                self.config
+                .usable_temporal_codes
+            )
+        )
+
+        if not current_temporal_usable.any():
 
             return self._empty_result(
                 code=(
@@ -245,26 +333,18 @@ class FusionEngine:
                     .CURRENT_TEMPORAL_UNAVAILABLE
                 ),
                 explanation=(
-                    "Fusion unavailable because the current "
-                    "temporal evidence is not usable."
+                    "Fusion unavailable because no signal "
+                    "at the current physiological moment has "
+                    "usable temporal evidence."
                 ),
                 reasons=[
                     "CURRENT_TEMPORAL_EVIDENCE_NOT_USABLE",
                 ],
             )
 
-        current_time = current[
-            "timestamp"
-        ]
-
-        context = (
-            current.get(
-                "context_state"
-            )
-            if "context_state" in current.index
-            else None
-        )
-
+        # ----------------------------------------------------
+        # Latest usable observation for each signal.
+        # ----------------------------------------------------
         evidence = self._latest_signal_evidence(
             history=history,
             current_time=current_time,
@@ -289,9 +369,8 @@ class FusionEngine:
         evidence = evidence.copy()
 
         # ----------------------------------------------------
-        # Per-signal features
+        # Per-signal components
         # ----------------------------------------------------
-
         evidence[
             "deviation_support"
         ] = evidence.apply(
@@ -354,14 +433,13 @@ class FusionEngine:
                 "signal"
             ].map(
                 lambda value:
-                    f"signal:{value}"
+                f"signal:{value}"
             )
         )
 
         # ----------------------------------------------------
         # Counts
         # ----------------------------------------------------
-
         supporting = evidence[
             evidence[
                 "supports_concern"
@@ -381,6 +459,7 @@ class FusionEngine:
         opposing_signal_count = len(
             opposing
         )
+
         opposition_fraction = (
             opposing_signal_count
             / available_signal_count
@@ -389,13 +468,15 @@ class FusionEngine:
         available_family_count = (
             evidence[
                 "family"
-            ].nunique()
+            ]
+            .nunique()
         )
 
         supporting_family_count = (
             supporting[
                 "family"
-            ].nunique()
+            ]
+            .nunique()
         )
 
         support_fraction = (
@@ -413,7 +494,6 @@ class FusionEngine:
         # ----------------------------------------------------
         # Direction agreement
         # ----------------------------------------------------
-
         direction_agreement = (
             self._direction_agreement(
                 evidence
@@ -423,7 +503,6 @@ class FusionEngine:
         # ----------------------------------------------------
         # Component aggregation
         # ----------------------------------------------------
-
         deviation_component = (
             self._weighted_mean(
                 values=(
@@ -524,9 +603,8 @@ class FusionEngine:
         )
 
         # ----------------------------------------------------
-        # State
+        # Fusion state
         # ----------------------------------------------------
-
         state = self._fusion_state(
             supporting_signal_count=(
                 supporting_signal_count
@@ -543,9 +621,8 @@ class FusionEngine:
         )
 
         # ----------------------------------------------------
-        # Reasons / explanation
+        # Reasons
         # ----------------------------------------------------
-
         reasons = self._reason_codes(
             available_signal_count=(
                 available_signal_count
@@ -630,6 +707,7 @@ class FusionEngine:
                 float(
                     opposition_fraction
                 ),
+
             "deviation_component":
                 float(
                     deviation_component
@@ -715,6 +793,44 @@ class FusionEngine:
         }
 
     # ========================================================
+    # Moment helpers
+    # ========================================================
+
+    @staticmethod
+    def _moment_context(
+        current_rows: pd.DataFrame,
+    ):
+        """
+        Return the shared context at a timestamp when it is
+        unambiguous.
+
+        If context is absent or multiple different contexts are
+        recorded at exactly the same timestamp, no context filter
+        is imposed.
+        """
+
+        if (
+            "context_state"
+            not in current_rows.columns
+        ):
+            return None
+
+        values = (
+            current_rows[
+                "context_state"
+            ]
+            .dropna()
+            .astype(str)
+            .unique()
+            .tolist()
+        )
+
+        if len(values) == 1:
+            return values[0]
+
+        return None
+
+    # ========================================================
     # Evidence selection
     # ========================================================
 
@@ -724,9 +840,14 @@ class FusionEngine:
         current_time: pd.Timestamp,
         context,
     ) -> pd.DataFrame:
-        """Select latest usable observation per signal.
+        """
+        Select the latest usable observation per signal.
 
-        Only observations at or before current_time are allowed.
+        All observations must satisfy:
+
+            timestamp <= current_time
+
+        so no future information can enter Fusion.
         """
 
         start_time = (
@@ -789,7 +910,6 @@ class FusionEngine:
             ]
 
         if candidates.empty:
-
             return candidates
 
         candidates = (
@@ -798,6 +918,7 @@ class FusionEngine:
                 [
                     "signal",
                     "timestamp",
+                    "_fusion_original_index",
                 ]
             )
         )
@@ -1070,7 +1191,10 @@ class FusionEngine:
             )
 
         if supporting_signal_count == 0:
-            return FusionState.NO_SUPPORT
+            return (
+                FusionState
+                .NO_SUPPORT
+            )
 
         if supporting_signal_count == 1:
             return (
@@ -1095,9 +1219,11 @@ class FusionEngine:
         if (
             supporting_signal_count
             >= consensus.min_supporting_signals
+
             and
             support_fraction
             >= consensus.min_support_fraction
+
             and
             supporting_family_count
             >= consensus.min_supporting_families
@@ -1258,19 +1384,21 @@ class FusionEngine:
         confidence: float,
     ) -> str:
 
-     return (
-        f"Fusion state: {state.value}. "
-        f"Contributing signals: {', '.join(contributing_signals)}. "
-        f"Supporting signals: "
-        f"{', '.join(supporting_signals) if supporting_signals else 'none'}. "
-        f"Opposing signals: "
-        f"{', '.join(opposing_signals) if opposing_signals else 'none'}. "
-        f"Support fraction: {support_fraction:.2f}. "
-        f"Opposition fraction: {opposition_fraction:.2f}. "
-        f"Evidence strength: {fusion_evidence_strength:.2f}. "
-        f"Adjusted fusion score: {fusion_score:.2f}. "
-        f"Fusion confidence: {confidence:.2f}."
+        return (
+            f"Fusion state: {state.value}. "
+            f"Contributing signals: "
+            f"{', '.join(contributing_signals)}. "
+            f"Supporting signals: "
+            f"{', '.join(supporting_signals) if supporting_signals else 'none'}. "
+            f"Opposing signals: "
+            f"{', '.join(opposing_signals) if opposing_signals else 'none'}. "
+            f"Support fraction: {support_fraction:.2f}. "
+            f"Opposition fraction: {opposition_fraction:.2f}. "
+            f"Evidence strength: {fusion_evidence_strength:.2f}. "
+            f"Adjusted fusion score: {fusion_score:.2f}. "
+            f"Fusion confidence: {confidence:.2f}."
         )
+
     # ========================================================
     # Empty states
     # ========================================================
@@ -1280,7 +1408,7 @@ class FusionEngine:
         code: FusionCode,
         explanation: str,
         reasons: list[str],
-        ) -> dict:
+    ) -> dict:
 
         return {
             "fusion_code":

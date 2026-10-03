@@ -1,0 +1,11 @@
+version: "explainability_v1"
+
+signal_labels:
+  sbp: "systolic blood pressure"
+  dbp: "diastolic blood pressure"
+  hr: "heart rate"
+  hrv: "heart-rate variability"
+
+display:
+  probability_decimals: 3
+  score_decimals: 3

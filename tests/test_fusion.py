@@ -1,15 +1,14 @@
-"""Tests for BioVance Fusion Engine v1."""
-
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 import pytest
 
 from biovance.fusion import (
     FusionEngine,
+    load_fusion_config,
 )
 
 
@@ -21,97 +20,125 @@ CONFIG_PATH = (
     / "fusion.yaml"
 )
 
+BASE_TIME = pd.Timestamp(
+    "2025-01-01 08:00:00"
+)
 
-@pytest.fixture
-def engine():
 
-    return FusionEngine.from_yaml(
-        CONFIG_PATH
-    )
-
+# ============================================================
+# Helpers
+# ============================================================
 
 def make_row(
-    signal,
-    minute,
-    risk_score,
-    temporal_code="OK",
-    persistence=0.5,
-    recurrence=0.5,
-    direction=1.0,
-    trend=0.5,
-    confidence=0.9,
-):
-
-    timestamp = (
-        pd.Timestamp(
-            "2025-01-01 08:00"
-        )
-        +
-        pd.Timedelta(
-            minutes=minute
-        )
-    )
+    signal: str,
+    minute: int,
+    risk_aligned_score: float,
+    *,
+    persistence_score: float = 0.5,
+    recurrence_score: float = 0.5,
+    direction_consistency: float = 1.0,
+    trend_score: float = 0.5,
+    temporal_confidence: float = 0.9,
+    temporal_code: str = "OK",
+    phase: str = "EVALUATION",
+    context_state: str = "WAKE",
+    patient_id: str = "p01",
+) -> dict:
+    """
+    Create one standardized Temporal -> Fusion input row.
+    """
 
     return {
-        "patient_id":
-            "p01",
-
-        "timestamp":
-            timestamp,
-
-        "signal":
-            signal,
-
-        "risk_aligned_score":
-            risk_score,
-
-        "deviation_magnitude":
-            abs(
-                risk_score
-            ),
-
-        "persistence_score":
-            persistence,
-
-        "recurrence_score":
-            recurrence,
-
-        "direction_consistency":
-            direction,
-
-        "trend_score":
-            trend,
-
-        "temporal_confidence":
-            confidence,
-
-        "reference_reliability":
-            1.0,
-
-        "temporal_code":
-            temporal_code,
-
-        "phase":
-            "EVALUATION",
-
-        "context_state":
-            "WAKE",
+        "patient_id": patient_id,
+        "timestamp": (
+            BASE_TIME
+            + pd.Timedelta(
+                minutes=minute
+            )
+        ),
+        "signal": signal,
+        "risk_aligned_score": (
+            risk_aligned_score
+        ),
+        "deviation_magnitude": abs(
+            risk_aligned_score
+        ),
+        "persistence_score": (
+            persistence_score
+        ),
+        "recurrence_score": (
+            recurrence_score
+        ),
+        "direction_consistency": (
+            direction_consistency
+        ),
+        "trend_score": trend_score,
+        "temporal_confidence": (
+            temporal_confidence
+        ),
+        "temporal_code": temporal_code,
+        "phase": phase,
+        "context_state": context_state,
     }
 
 
 def make_df(
-    rows,
-):
+    rows: list[dict],
+) -> pd.DataFrame:
+    return pd.DataFrame(rows)
 
-    return pd.DataFrame(
-        rows
+
+def row_at(
+    out: pd.DataFrame,
+    minute: int,
+) -> pd.Series:
+    """
+    Return the single Fusion result for a timestamp.
+    """
+
+    timestamp = (
+        BASE_TIME
+        + pd.Timedelta(
+            minutes=minute
+        )
+    )
+
+    selected = out[
+        out["timestamp"] == timestamp
+    ]
+
+    assert len(selected) == 1
+
+    return selected.iloc[0]
+
+
+# ============================================================
+# Fixtures
+# ============================================================
+
+@pytest.fixture
+def config():
+    return load_fusion_config(
+        CONFIG_PATH
     )
 
 
-def test_preserves_row_count(
+@pytest.fixture
+def engine(
+    config,
+):
+    return FusionEngine(
+        config
+    )
+
+
+# ============================================================
+# Atomic evaluation contract
+# ============================================================
+
+def test_one_result_per_patient_timestamp(
     engine,
 ):
-
     df = make_df([
         make_row(
             "sbp",
@@ -129,113 +156,119 @@ def test_preserves_row_count(
         df
     )
 
-    assert len(out) == len(df)
-
-
-def test_single_signal_is_insufficient(
-    engine,
-):
-
-    df = make_df([
-        make_row(
-            "sbp",
-            0,
-            3.0,
-        ),
-    ])
-
-    out = engine.transform(
-        df
-    )
+    assert len(out) == 1
 
     assert (
-        out.iloc[-1][
-            "fusion_state"
+        out.loc[
+            0,
+            "patient_id",
         ]
-        ==
-        "INSUFFICIENT_EVIDENCE"
+        == "p01"
     )
-
-
-def test_two_bp_signals_same_family(
-    engine,
-):
-
-    df = make_df([
-        make_row(
-            "sbp",
-            0,
-            3.0,
-        ),
-        make_row(
-            "dbp",
-            0,
-            2.5,
-        ),
-    ])
-
-    out = engine.transform(
-        df
-    )
-
-    last = out.iloc[-1]
 
     assert (
-        last[
-            "supporting_signal_count"
+        out.loc[
+            0,
+            "timestamp",
+        ]
+        == BASE_TIME
+    )
+
+    assert (
+        out.loc[
+            0,
+            "current_signal_count",
         ]
         == 2
     )
 
-    assert (
-        last[
-            "supporting_family_count"
+    signals = json.loads(
+        out.loc[
+            0,
+            "current_signals",
         ]
-        == 1
     )
 
-    assert (
-        last[
-            "fusion_state"
-        ]
-        ==
-        "MULTISIGNAL_SAME_FAMILY"
-    )
+    assert set(signals) == {
+        "sbp",
+        "dbp",
+    }
 
 
-def test_bp_and_hr_create_multimodal_support(
+def test_same_timestamp_signal_order_does_not_change_result(
     engine,
 ):
-
-    df = make_df([
+    rows = [
         make_row(
             "sbp",
             0,
             3.0,
+        ),
+        make_row(
+            "dbp",
+            0,
+            2.5,
         ),
         make_row(
             "hr",
             0,
-            2.5,
+            3.2,
         ),
-    ])
+    ]
 
-    out = engine.transform(
-        df
+    df_a = make_df(
+        rows
     )
 
-    assert (
-        out.iloc[-1][
-            "supporting_family_count"
-        ]
-        == 2
+    df_b = make_df(
+        list(
+            reversed(
+                rows
+            )
+        )
+    )
+
+    out_a = engine.transform(
+        df_a
+    )
+
+    out_b = engine.transform(
+        df_b
+    )
+
+    cols = [
+        "fusion_code",
+        "fusion_state",
+        "fusion_evidence_strength",
+        "fusion_score",
+        "fusion_confidence",
+        "available_signal_count",
+        "supporting_signal_count",
+        "opposing_signal_count",
+        "available_family_count",
+        "supporting_family_count",
+        "support_fraction",
+        "family_support_fraction",
+        "direction_agreement",
+    ]
+
+    pd.testing.assert_frame_equal(
+        out_a[
+            cols
+        ].reset_index(
+            drop=True
+        ),
+        out_b[
+            cols
+        ].reset_index(
+            drop=True
+        ),
     )
 
 
-def test_three_signals_can_form_consensus(
+def test_all_simultaneous_signals_are_seen_together(
     engine,
 ):
-
     df = make_df([
         make_row(
             "sbp",
@@ -258,21 +291,237 @@ def test_three_signals_can_form_consensus(
         df
     )
 
-    last = out.iloc[-1]
+    assert len(out) == 1
+
+    result = out.iloc[0]
 
     assert (
-        last[
-            "fusion_state"
+        result[
+            "available_signal_count"
         ]
-        ==
-        "MULTIMODAL_CONSENSUS"
+        == 3
     )
 
+    assert (
+        result[
+            "supporting_signal_count"
+        ]
+        == 3
+    )
+
+    assert (
+        result[
+            "fusion_state"
+        ]
+        == "MULTIMODAL_CONSENSUS"
+    )
+
+
+# ============================================================
+# Evidence availability
+# ============================================================
+
+def test_single_signal_is_insufficient(
+    engine,
+):
+    df = make_df([
+        make_row(
+            "sbp",
+            0,
+            3.0,
+        ),
+    ])
+
+    out = engine.transform(
+        df
+    )
+
+    result = out.iloc[0]
+
+    assert (
+        result["fusion_code"]
+        == "INSUFFICIENT_MULTISIGNAL_EVIDENCE"
+    )
+
+    assert (
+        result["fusion_state"]
+        == "INSUFFICIENT_EVIDENCE"
+    )
+
+    assert (
+        result[
+            "available_signal_count"
+        ]
+        == 1
+    )
+
+
+# ============================================================
+# Signal families
+# ============================================================
+
+def test_two_bp_signals_same_family(
+    engine,
+):
+    df = make_df([
+        make_row(
+            "sbp",
+            0,
+            3.0,
+        ),
+        make_row(
+            "dbp",
+            0,
+            3.0,
+        ),
+    ])
+
+    out = engine.transform(
+        df
+    )
+
+    result = out.iloc[0]
+
+    assert (
+        result["fusion_code"]
+        == "OK"
+    )
+
+    assert (
+        result[
+            "supporting_signal_count"
+        ]
+        == 2
+    )
+
+    assert (
+        result[
+            "supporting_family_count"
+        ]
+        == 1
+    )
+
+    assert (
+        result["fusion_state"]
+        == "MULTISIGNAL_SAME_FAMILY"
+    )
+
+
+def test_bp_and_hr_create_multimodal_support(
+    engine,
+):
+    # Three signals are available.
+    #
+    # SBP and HR support concern.
+    # DBP is neutral.
+    #
+    # support fraction = 2/3, which is below the configured
+    # 0.67 consensus threshold, so this is MULTIMODAL_SUPPORT.
+    df = make_df([
+        make_row(
+            "sbp",
+            0,
+            3.0,
+        ),
+        make_row(
+            "hr",
+            0,
+            3.0,
+        ),
+        make_row(
+            "dbp",
+            0,
+            0.0,
+        ),
+    ])
+
+    out = engine.transform(
+        df
+    )
+
+    result = out.iloc[0]
+
+    assert (
+        result[
+            "supporting_signal_count"
+        ]
+        == 2
+    )
+
+    assert (
+        result[
+            "supporting_family_count"
+        ]
+        == 2
+    )
+
+    assert (
+        result["fusion_state"]
+        == "MULTIMODAL_SUPPORT"
+    )
+
+
+def test_three_signals_can_form_consensus(
+    engine,
+):
+    df = make_df([
+        make_row(
+            "sbp",
+            0,
+            3.0,
+        ),
+        make_row(
+            "dbp",
+            0,
+            2.5,
+        ),
+        make_row(
+            "hr",
+            0,
+            3.5,
+        ),
+    ])
+
+    out = engine.transform(
+        df
+    )
+
+    result = out.iloc[0]
+
+    assert (
+        result[
+            "available_signal_count"
+        ]
+        == 3
+    )
+
+    assert (
+        result[
+            "supporting_signal_count"
+        ]
+        == 3
+    )
+
+    assert (
+        result[
+            "supporting_family_count"
+        ]
+        == 2
+    )
+
+    assert (
+        result["fusion_state"]
+        == "MULTIMODAL_CONSENSUS"
+    )
+
+
+# ============================================================
+# Support / opposition
+# ============================================================
 
 def test_normal_signals_do_not_support(
     engine,
 ):
-
     df = make_df([
         make_row(
             "sbp",
@@ -282,7 +531,7 @@ def test_normal_signals_do_not_support(
         make_row(
             "hr",
             0,
-            0.3,
+            0.5,
         ),
     ])
 
@@ -290,19 +539,31 @@ def test_normal_signals_do_not_support(
         df
     )
 
+    result = out.iloc[0]
+
     assert (
-        out.iloc[-1][
-            "fusion_state"
+        result[
+            "supporting_signal_count"
         ]
-        ==
-        "NO_SUPPORT"
+        == 0
+    )
+
+    assert (
+        result[
+            "opposing_signal_count"
+        ]
+        == 0
+    )
+
+    assert (
+        result["fusion_state"]
+        == "NO_SUPPORT"
     )
 
 
 def test_opposite_direction_creates_conflict(
     engine,
 ):
-
     df = make_df([
         make_row(
             "sbp",
@@ -320,29 +581,59 @@ def test_opposite_direction_creates_conflict(
         df
     )
 
+    result = out.iloc[0]
+
     assert (
-        out.iloc[-1][
-            "fusion_state"
+        result[
+            "supporting_signal_count"
         ]
-        ==
-        "CONFLICTING_EVIDENCE"
+        == 1
     )
 
+    assert (
+        result[
+            "opposing_signal_count"
+        ]
+        == 1
+    )
+
+    assert (
+        result["fusion_state"]
+        == "CONFLICTING_EVIDENCE"
+    )
+
+    assert (
+        result[
+            "opposition_fraction"
+        ]
+        > 0.0
+    )
+
+
+# ============================================================
+# Lookback behavior
+# ============================================================
 
 def test_old_signal_is_not_used(
     engine,
 ):
-
+    # SBP is 120 minutes old.
+    # Fusion lookback is 90 minutes.
     df = make_df([
         make_row(
             "sbp",
             0,
-            3.0,
+            4.0,
         ),
         make_row(
             "hr",
             120,
             3.0,
+        ),
+        make_row(
+            "dbp",
+            120,
+            0.0,
         ),
     ])
 
@@ -350,26 +641,109 @@ def test_old_signal_is_not_used(
         df
     )
 
-    last = out.iloc[-1]
+    result = row_at(
+        out,
+        120,
+    )
+
+    contributing = set(
+        json.loads(
+            result[
+                "contributing_signals"
+            ]
+        )
+    )
+
+    assert "sbp" not in contributing
+
+    assert contributing == {
+        "hr",
+        "dbp",
+    }
 
     assert (
-        last[
+        result[
             "available_signal_count"
         ]
-        == 1
+        == 2
     )
 
 
 def test_signal_within_lookback_is_used(
     engine,
 ):
+    # SBP is 80 minutes old and therefore should still be
+    # available inside the 90 minute lookback.
+    df = make_df([
+        make_row(
+            "sbp",
+            40,
+            3.0,
+        ),
+        make_row(
+            "hr",
+            120,
+            3.0,
+        ),
+        make_row(
+            "dbp",
+            120,
+            0.0,
+        ),
+    ])
 
+    out = engine.transform(
+        df
+    )
+
+    result = row_at(
+        out,
+        120,
+    )
+
+    contributing = set(
+        json.loads(
+            result[
+                "contributing_signals"
+            ]
+        )
+    )
+
+    assert "sbp" in contributing
+
+    assert (
+        result[
+            "available_signal_count"
+        ]
+        == 3
+    )
+
+    assert (
+        result[
+            "supporting_signal_count"
+        ]
+        == 2
+    )
+
+
+def test_latest_signal_observation_is_used(
+    engine,
+):
+    # Older SBP supports concern.
     df = make_df([
         make_row(
             "sbp",
             0,
-            3.0,
+            4.0,
         ),
+
+        # Latest SBP is normal.
+        make_row(
+            "sbp",
+            30,
+            0.0,
+        ),
+
         make_row(
             "hr",
             60,
@@ -381,35 +755,58 @@ def test_signal_within_lookback_is_used(
         df
     )
 
-    last = out.iloc[-1]
+    result = row_at(
+        out,
+        60,
+    )
 
+    # Latest SBP should replace the older elevated SBP,
+    # leaving HR as the only supporting signal.
     assert (
-        last[
+        result[
             "available_signal_count"
         ]
         == 2
     )
 
+    assert (
+        result[
+            "supporting_signal_count"
+        ]
+        == 1
+    )
 
-def test_latest_signal_observation_is_used(
+    assert (
+        result["fusion_state"]
+        == "SINGLE_SIGNAL_SUPPORT"
+    )
+
+
+# ============================================================
+# Context isolation
+# ============================================================
+
+def test_contexts_do_not_mix(
     engine,
 ):
-
     df = make_df([
         make_row(
             "sbp",
             0,
-            3.0,
-        ),
-        make_row(
-            "sbp",
-            30,
-            0.2,
+            4.0,
+            context_state="WAKE",
         ),
         make_row(
             "hr",
             30,
             3.0,
+            context_state="SLEEP",
+        ),
+        make_row(
+            "dbp",
+            30,
+            0.0,
+            context_state="SLEEP",
         ),
     ])
 
@@ -417,79 +814,58 @@ def test_latest_signal_observation_is_used(
         df
     )
 
-    last = out.iloc[-1]
+    result = row_at(
+        out,
+        30,
+    )
+
+    contributing = set(
+        json.loads(
+            result[
+                "contributing_signals"
+            ]
+        )
+    )
+
+    # WAKE SBP must not be combined with the SLEEP moment.
+    assert "sbp" not in contributing
+
+    assert contributing == {
+        "hr",
+        "dbp",
+    }
 
     assert (
-        last[
+        result[
             "supporting_signal_count"
         ]
         == 1
     )
 
 
-def test_contexts_do_not_mix(
-    engine,
-):
-
-    wake = make_row(
-        "sbp",
-        0,
-        3.0,
-    )
-
-    sleep = make_row(
-        "hr",
-        30,
-        3.0,
-    )
-
-    sleep[
-        "context_state"
-    ] = "SLEEP"
-
-    df = make_df([
-        wake,
-        sleep,
-    ])
-
-    out = engine.transform(
-        df
-    )
-
-    assert (
-        out.iloc[-1][
-            "available_signal_count"
-        ]
-        == 1
-    )
-
+# ============================================================
+# Temporal usability
+# ============================================================
 
 def test_temporal_unusable_signal_not_used(
     engine,
 ):
-
     df = make_df([
         make_row(
             "sbp",
             0,
-            3.0,
-            temporal_code="OK",
+            4.0,
+            temporal_code="INSUFFICIENT",
         ),
-
-        make_row(
-            "dbp",
-            0,
-            3.0,
-            temporal_code=(
-                "INSUFFICIENT_TEMPORAL_EVIDENCE"
-            ),
-        ),
-
         make_row(
             "hr",
             0,
             3.0,
-            temporal_code="OK",
+        ),
+        make_row(
+            "dbp",
+            0,
+            0.0,
         ),
     ])
 
@@ -497,28 +873,50 @@ def test_temporal_unusable_signal_not_used(
         df
     )
 
+    result = out.iloc[0]
+
+    contributing = set(
+        json.loads(
+            result[
+                "contributing_signals"
+            ]
+        )
+    )
+
+    assert "sbp" not in contributing
+
+    assert contributing == {
+        "hr",
+        "dbp",
+    }
+
     assert (
-        out.iloc[-1][
+        result[
             "available_signal_count"
         ]
         == 2
     )
 
 
+# ============================================================
+# Score bounds
+# ============================================================
+
 def test_confidence_between_zero_and_one(
     engine,
 ):
-
     df = make_df([
         make_row(
             "sbp",
             0,
             3.0,
+            temporal_confidence=0.8,
         ),
         make_row(
             "hr",
             0,
             3.0,
+            temporal_confidence=0.9,
         ),
     ])
 
@@ -526,27 +924,36 @@ def test_confidence_between_zero_and_one(
         df
     )
 
-    value = out.iloc[-1][
-        "fusion_confidence"
+    confidence = out.loc[
+        0,
+        "fusion_confidence",
     ]
 
-    assert 0 <= value <= 1
+    assert (
+        0.0
+        <= confidence
+        <= 1.0
+    )
 
 
 def test_fusion_score_between_zero_and_one(
     engine,
 ):
-
     df = make_df([
         make_row(
             "sbp",
             0,
-            4.0,
+            10.0,
+        ),
+        make_row(
+            "dbp",
+            0,
+            10.0,
         ),
         make_row(
             "hr",
             0,
-            4.0,
+            10.0,
         ),
     ])
 
@@ -554,29 +961,40 @@ def test_fusion_score_between_zero_and_one(
         df
     )
 
-    value = out.iloc[-1][
-        "fusion_score"
+    score = out.loc[
+        0,
+        "fusion_score",
     ]
 
-    assert 0 <= value <= 1
+    assert (
+        0.0
+        <= score
+        <= 1.0
+    )
 
+
+# ============================================================
+# Evidence strength
+# ============================================================
 
 def test_stronger_evidence_increases_score(
     engine,
 ):
-
     weak = make_df([
         make_row(
             "sbp",
             0,
             2.1,
-            persistence=0.2,
+        ),
+        make_row(
+            "dbp",
+            0,
+            2.1,
         ),
         make_row(
             "hr",
             0,
             2.1,
-            persistence=0.2,
         ),
     ])
 
@@ -585,17 +1003,16 @@ def test_stronger_evidence_increases_score(
             "sbp",
             0,
             4.0,
-            persistence=1.0,
-            recurrence=1.0,
-            trend=1.0,
+        ),
+        make_row(
+            "dbp",
+            0,
+            4.0,
         ),
         make_row(
             "hr",
             0,
             4.0,
-            persistence=1.0,
-            recurrence=1.0,
-            trend=1.0,
         ),
     ])
 
@@ -608,91 +1025,144 @@ def test_stronger_evidence_increases_score(
     )
 
     assert (
-        strong_out.iloc[-1][
-            "fusion_score"
+        strong_out.loc[
+            0,
+            "fusion_score",
         ]
         >
-        weak_out.iloc[-1][
-            "fusion_score"
+        weak_out.loc[
+            0,
+            "fusion_score",
         ]
     )
 
+
+# ============================================================
+# Leakage protection
+# ============================================================
 
 def test_future_rows_do_not_change_past(
     engine,
 ):
-
-    original = make_df([
+    past = make_df([
         make_row(
             "sbp",
             0,
-            3.0,
-        ),
-        make_row(
-            "hr",
-            30,
-            3.0,
-        ),
-    ])
-
-    extended = make_df([
-        make_row(
-            "sbp",
-            0,
-            3.0,
-        ),
-        make_row(
-            "hr",
-            30,
             3.0,
         ),
         make_row(
             "dbp",
-            60,
-            -8.0,
+            0,
+            2.5,
+        ),
+        make_row(
+            "hr",
+            0,
+            3.0,
         ),
     ])
 
-    first = engine.transform(
-        original
+    with_future = make_df([
+        make_row(
+            "sbp",
+            0,
+            3.0,
+        ),
+        make_row(
+            "dbp",
+            0,
+            2.5,
+        ),
+        make_row(
+            "hr",
+            0,
+            3.0,
+        ),
+
+        # Extreme future observations.
+        make_row(
+            "sbp",
+            60,
+            -10.0,
+        ),
+        make_row(
+            "dbp",
+            60,
+            -10.0,
+        ),
+        make_row(
+            "hr",
+            60,
+            -10.0,
+        ),
+    ])
+
+    past_out = engine.transform(
+        past
     )
 
-    second = engine.transform(
-        extended
+    full_out = engine.transform(
+        with_future
     )
 
-    assert (
-        first.iloc[1][
-            "fusion_state"
-        ]
-        ==
-        second.iloc[1][
-            "fusion_state"
-        ]
+    past_result = row_at(
+        past_out,
+        0,
     )
 
-    assert (
-        first.iloc[1][
-            "fusion_score"
-        ]
-        ==
-        pytest.approx(
-            second.iloc[1][
-                "fusion_score"
-            ]
-        )
+    full_past_result = row_at(
+        full_out,
+        0,
     )
 
+    cols = [
+        "fusion_code",
+        "fusion_state",
+        "fusion_evidence_strength",
+        "fusion_score",
+        "fusion_confidence",
+        "available_signal_count",
+        "supporting_signal_count",
+        "opposing_signal_count",
+        "support_fraction",
+        "direction_agreement",
+    ]
+
+    for col in cols:
+        if isinstance(
+            past_result[col],
+            float,
+        ):
+            assert (
+                full_past_result[col]
+                == pytest.approx(
+                    past_result[col]
+                )
+            )
+        else:
+            assert (
+                full_past_result[col]
+                == past_result[col]
+            )
+
+
+# ============================================================
+# Explainability
+# ============================================================
 
 def test_explanation_created(
     engine,
 ):
-
     df = make_df([
         make_row(
             "sbp",
             0,
             3.0,
+        ),
+        make_row(
+            "dbp",
+            0,
+            2.5,
         ),
         make_row(
             "hr",
@@ -705,24 +1175,44 @@ def test_explanation_created(
         df
     )
 
+    explanation = out.loc[
+        0,
+        "fusion_explanation",
+    ]
+
     assert isinstance(
-        out.iloc[-1][
-            "fusion_explanation"
-        ],
+        explanation,
         str,
     )
 
+    assert len(
+        explanation
+    ) > 0
+
+    assert (
+        "Fusion state:"
+        in explanation
+    )
+
+
+# ============================================================
+# Schema validation
+# ============================================================
 
 def test_missing_required_column_raises(
     engine,
 ):
-
     df = make_df([
         make_row(
             "sbp",
             0,
             3.0,
-        )
+        ),
+        make_row(
+            "hr",
+            0,
+            3.0,
+        ),
     ])
 
     df = df.drop(
@@ -732,27 +1222,31 @@ def test_missing_required_column_raises(
     )
 
     with pytest.raises(
-        ValueError
+        ValueError,
+        match="risk_aligned_score",
     ):
-
         engine.transform(
             df
         )
 
+
+# ============================================================
+# Opposition penalty
+# ============================================================
+
 def test_conflict_reduces_adjusted_fusion_score(
     engine,
 ):
-
     df = make_df([
         make_row(
             "sbp",
             0,
-            3.0,
+            4.0,
         ),
         make_row(
             "hr",
             0,
-            -3.0,
+            -4.0,
         ),
     ])
 
@@ -760,47 +1254,44 @@ def test_conflict_reduces_adjusted_fusion_score(
         df
     )
 
-    last = out.iloc[-1]
+    result = out.iloc[0]
 
     assert (
-        last[
-            "fusion_state"
-        ]
-        ==
-        "CONFLICTING_EVIDENCE"
+        result["fusion_state"]
+        == "CONFLICTING_EVIDENCE"
     )
 
     assert (
-        last[
+        result[
             "opposition_fraction"
         ]
-        > 0
+        > 0.0
     )
 
     assert (
-        last[
+        result[
             "fusion_score"
         ]
         <
-        last[
+        result[
             "fusion_evidence_strength"
         ]
     )
 
+
 def test_no_opposition_keeps_full_evidence_strength(
     engine,
 ):
-
     df = make_df([
         make_row(
             "sbp",
             0,
-            3.0,
+            4.0,
         ),
         make_row(
             "hr",
             0,
-            3.0,
+            4.0,
         ),
     ])
 
@@ -808,10 +1299,10 @@ def test_no_opposition_keeps_full_evidence_strength(
         df
     )
 
-    last = out.iloc[-1]
+    result = out.iloc[0]
 
     assert (
-        last[
+        result[
             "opposition_fraction"
         ]
         == pytest.approx(
@@ -820,12 +1311,11 @@ def test_no_opposition_keeps_full_evidence_strength(
     )
 
     assert (
-        last[
+        result[
             "fusion_score"
         ]
-        ==
-        pytest.approx(
-            last[
+        == pytest.approx(
+            result[
                 "fusion_evidence_strength"
             ]
         )
