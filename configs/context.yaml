@@ -1,0 +1,144 @@
+# BioVance Context Engine configuration.
+#
+# Context states:
+#   SLEEP
+#   REST
+#   ACTIVE
+#   UNKNOWN
+#
+# Gyroscope thresholds can be personalized from a historical
+# reference period. Threshold fitting must use only past/reference
+# data and must be frozen before classification of future data.
+
+columns:
+  patient_id:
+    - patient_id
+    - participant_id
+    - subject_id
+    - deviceId
+    - userId
+    - id
+
+  timestamp_start:
+    - timestamp_start
+    - timestamp
+    - ts_start
+
+  timestamp_end:
+    - timestamp_end
+    - ts_end
+
+  sleep_overlap_fraction:
+    - sleep_overlap_fraction
+    - sleep_overlap
+
+  gyro_magnitude:
+    - gyro_magnitude
+    - gyr_magnitude
+
+  dynamic_acc:
+    - dynamic_acc
+    - acc_dynamic
+
+  acc_magnitude:
+    - acc_magnitude
+
+  steps:
+    - steps
+    - step_count
+
+  distance:
+    - distance
+
+  calories:
+    - calories
+
+  missingness_score:
+    - missingness_score
+
+
+profiles:
+
+  baigutanova:
+
+    # -------------------------------------------------------
+    # Sleep
+    # -------------------------------------------------------
+
+    sleep_overlap_threshold: 0.80
+    partial_sleep_is_unknown: true
+
+    # -------------------------------------------------------
+    # Gyroscope personalization
+    # -------------------------------------------------------
+
+    personalize_gyro: true
+
+    # Reference windows used to learn movement thresholds must
+    # have no diary sleep overlap.
+    awake_overlap_max: 0.0
+
+    # Participant-specific thresholds:
+    # REST   <= personal awake median
+    # ACTIVE >= personal awake p90
+    rest_gyro_quantile: 0.50
+    active_gyro_quantile: 0.90
+
+    # Require enough historical awake observations before
+    # trusting participant-specific estimates.
+    min_personal_awake_windows: 30
+
+    # Require enough total reference evidence to estimate
+    # population thresholds from the fit data.
+    min_global_awake_windows: 100
+
+    # Shrink participant thresholds toward the population
+    # reference:
+    #
+    # weight = n / (n + shrinkage_strength)
+    #
+    # Larger values = more conservative personalization.
+    shrinkage_strength: 50.0
+
+    # Prevent pathological threshold collapse.
+    min_gyro_threshold_gap: 0.05
+
+    # Fallback thresholds from the initial BAIGUTANOVA EDA.
+    # These are used only when fit data are insufficient.
+    fallback_rest_gyro: 0.79
+    fallback_active_gyro: 1.33
+
+    # -------------------------------------------------------
+    # Steps
+    # -------------------------------------------------------
+
+    rest_steps_max: 0.0
+    active_steps_min: 1.0
+
+    # -------------------------------------------------------
+    # Optional dynamic acceleration
+    # -------------------------------------------------------
+
+    use_dynamic_acc: false
+
+    rest_dynamic_acc_max: 0.55
+    active_dynamic_acc_min: 1.99
+
+    # -------------------------------------------------------
+    # Activity level
+    # -------------------------------------------------------
+
+    steps_activity_reference: 5.0
+    dynamic_acc_activity_reference: 1.99
+
+    activity_weights:
+      gyro: 0.70
+      steps: 0.30
+      dynamic_acc: 0.00
+
+    # -------------------------------------------------------
+    # Confidence
+    # -------------------------------------------------------
+
+    single_source_confidence_cap: 0.75
+    unknown_confidence_cap: 0.49

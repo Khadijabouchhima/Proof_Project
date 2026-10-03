@@ -1,0 +1,58 @@
+# BioVance Deviation Engine
+#
+# Purpose:
+#   Describe how far one physiological observation deviates from
+#   that person's established personalized baseline.
+#
+# IMPORTANT:
+#   These bands are descriptive engineering bands.
+#   They are NOT warning thresholds and NOT clinical thresholds.
+#
+# Persistence, recurrence, and worsening belong to the Temporal Engine.
+
+bands:
+  elevated: 2.0
+  large: 3.0
+  extreme: 4.5
+
+baseline:
+  target_n: 28
+
+quality:
+  blocking_statuses:
+    - POOR
+
+signals:
+
+  hr:
+    unit: bpm
+
+    # +1 means HIGH values point in the risk-aligned direction.
+    orientation: 1
+
+    eligible_contexts:
+      - REST
+
+  hrv:
+    unit: ms
+
+    # -1 means LOW values point in the risk-aligned direction.
+    orientation: -1
+
+    eligible_contexts:
+      - REST
+      - SLEEP
+
+  sbp:
+    unit: mmHg
+    orientation: 1
+
+    eligible_contexts:
+      - REST
+
+  dbp:
+    unit: mmHg
+    orientation: 1
+
+    eligible_contexts:
+      - REST

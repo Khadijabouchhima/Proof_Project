@@ -20,8 +20,6 @@ from biovance.personalization import (
 # ---------------------------------------------------------
 csv_path = (
     ROOT
-    / "src"
-    / "biovance"
     / "data"
     / "processed"
     / "pmdata_model_ready.csv"

@@ -1,35 +1,130 @@
+# BioVance Data Quality Engine
+#
+# These thresholds are engineering defaults.
+# They should later be verified/calibrated using TRAIN/CALIBRATION data,
+# not chosen using the final test set.
+
 columns:
-  patient_id: [patient_id, subject_id, participant_id, id]
-  timestamp: [timestamp, ts, datetime]
-  signal_quality: [signal_quality, quality]
+  patient_id:
+    - patient_id
+    - subject_id
+    - participant_id
+    - participant
+    - id
 
-thresholds:
-  min_quality: 0.5
-  good_quality: 0.8
+  timestamp:
+    - timestamp
+    - datetime
+    - date_time
+    - date
+    - time
 
-coverage:
-  min_obs_per_day: 3
-  min_valid_days: 7
+  signal:
+    - signal
+    - signal_name
 
-physiology:
+  value:
+    - value
+    - signal_value
 
-  hr:
-    min: 30
-    max: 220
+  coverage:
+    - coverage
+    - signal_coverage
 
-  sbp:
-    min: 70
-    max: 250
+  sample_count:
+    - sample_count
+    - n_samples
+    - n_observations
 
-  dbp:
-    min: 40
-    max: 150
+  sensor_confidence:
+    - sensor_confidence
+    - confidence
+    - confidence_raw
 
-  hrv:
-    min: 1
-    max: 300
+  valid:
+    - valid
+    - validity
+    - valid_day
 
-states:
-  good: 0.8
-  acceptable: 0.6
-  poor: 0.3
+
+profiles:
+
+  pmdata:
+
+    status_thresholds:
+      good: 0.80
+      fair: 0.50
+
+    # Extremely poor coverage is a hard failure regardless
+    # of the weighted quality score.
+    hard_min_coverage: 0.20
+
+    weights:
+      coverage: 0.45
+      samples: 0.35
+
+      # Keep at 0 until PMData confidence semantics are
+      # verified and normalized properly.
+      confidence: 0.00
+
+      validity: 0.20
+
+    signals:
+
+      hr:
+        aliases:
+          - hr
+          - heart_rate
+
+        # Starting engineering value only.
+        # This must eventually be justified from PMData
+        # sampling semantics or calibration experiments.
+        target_samples: 100
+
+        hard_min_samples: 3
+
+        # Disabled until hr_conf_mean scale is verified.
+        confidence_min: null
+        confidence_max: null
+
+      hrv:
+        aliases:
+          - hrv
+          - rmssd
+          - sdnn
+
+        target_samples: 1
+        hard_min_samples: 1
+        confidence_min: null
+        confidence_max: null
+
+      sbp:
+        aliases:
+          - sbp
+          - systolic
+          - systolic_bp
+
+        target_samples: 1
+        hard_min_samples: 1
+        confidence_min: null
+        confidence_max: null
+
+      dbp:
+        aliases:
+          - dbp
+          - diastolic
+          - diastolic_bp
+
+        target_samples: 1
+        hard_min_samples: 1
+        confidence_min: null
+        confidence_max: null
+
+      spo2:
+        aliases:
+          - spo2
+
+        target_samples: 10
+        hard_min_samples: 1
+        confidence_min: null
+        confidence_max: null

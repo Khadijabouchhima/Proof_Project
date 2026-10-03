@@ -1,0 +1,58 @@
+version: 1
+
+# Temporal Engine consumes deviation evidence.
+# These are machine-readable Deviation codes that may contribute
+# to temporal calculations.
+usable_codes:
+  - OK
+
+# Descriptive deviation threshold inherited as an engineering
+# temporal feature boundary. This is NOT a clinical warning threshold.
+elevated_magnitude_threshold: 2.0
+
+windows:
+  # Current-run / local persistence evidence.
+  short_hours: 2.0
+
+  # Direction and trend evidence.
+  medium_hours: 6.0
+
+  # Recurrence and overall evidence coverage.
+  long_hours: 12.0
+
+gap_control:
+  # Observations farther apart than this are not treated as
+  # continuously connected evidence.
+  max_gap_minutes: 120.0
+
+persistence:
+  # Engineering defaults, not clinical rules.
+  min_elevated_observations: 2
+  min_elevated_fraction: 0.50
+
+recurrence:
+  # At least this many separate elevated episodes indicates recurrence.
+  min_separate_episodes: 2
+
+  # A long break separates elevated episodes even when there is
+  # no observed normal measurement between them.
+  episode_gap_minutes: 120.0
+
+direction:
+  min_consistency_fraction: 0.75
+
+trend:
+  min_points: 4
+  min_span_minutes: 90
+  slope_scale_z_per_hour: 0.50
+  worsening_score_threshold: 0.50
+
+confidence:
+  min_observations: 3
+  target_observations: 8
+
+  weights:
+    observation_support: 0.30
+    evidence_fraction: 0.30
+    gap_continuity: 0.20
+    reference_reliability: 0.20
