@@ -1,0 +1,62 @@
+version: 1
+
+# Only temporal rows with these codes may contribute evidence.
+usable_temporal_codes:
+  - OK
+
+# How far backwards Fusion may look for the latest observation
+# from another signal.
+#
+# Engineering value based on DRYAD sampling (~30–60 min).
+lookback_minutes: 90
+
+# A signal supports concern when its risk-aligned deviation
+# is at least this large.
+#
+# This is descriptive, NOT a clinical threshold.
+support_risk_aligned_z: 2.0
+
+# A strong deviation in the opposite direction is treated
+# as opposing evidence.
+opposition_risk_aligned_z: -2.0
+
+# Used only to normalize deviation strength to [0, 1].
+# At >= 4 SD risk-aligned deviation, deviation strength saturates.
+deviation_full_strength_z: 4.0
+
+# Minimum number of usable signals needed before claiming
+# multisignal evidence.
+min_available_signals: 2
+
+# Signal families prevent highly related signals from being
+# treated as completely independent modalities.
+signal_families:
+  sbp: blood_pressure
+  dbp: blood_pressure
+  map: blood_pressure
+  pp: blood_pressure
+
+  hr: heart_rate
+  hrv: heart_rate_variability
+
+# Per-signal temporal evidence composition.
+temporal_component_weights:
+  persistence: 0.40
+  recurrence: 0.25
+  worsening: 0.20
+  direction_consistency: 0.15
+
+# Fusion score components.
+#
+# Engineering weights only.
+fusion_weights:
+  deviation: 0.35
+  temporal: 0.30
+  agreement: 0.20
+  confidence: 0.15
+
+# Descriptive consensus requirement.
+consensus:
+  min_supporting_signals: 2
+  min_support_fraction: 0.67
+  min_supporting_families: 2
