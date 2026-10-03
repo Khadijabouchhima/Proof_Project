@@ -9,18 +9,15 @@ import inspect
 import numpy as np
 import pandas as pd
 
-from biovance.personalization import (
-    PersonalizationEngine,
-    load_personalization_config,
-)
+from biovance.personalization import PersonalizationEngine, load_personalization_config
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-# ============================================================
-# Generic helpers for frozen BioVance engines
-# ============================================================
+# ---------------------------------------------------------------------
+# Engine loading
+# ---------------------------------------------------------------------
 
 def _import_package(name: str):
     return importlib.import_module(f"biovance.{name}")
@@ -31,121 +28,125 @@ def _find_engine_class(module, name: str):
     if hasattr(module, preferred):
         return getattr(module, preferred)
 
-    for attr_name in dir(module):
-        if attr_name.endswith("Engine"):
-            obj = getattr(module, attr_name)
-            if inspect.isclass(obj):
-                return obj
-
+    candidates = [
+        getattr(module, attr)
+        for attr in dir(module)
+        if inspect.isclass(getattr(module, attr))
+        and attr.endswith("Engine")
+    ]
+    if len(candidates) == 1:
+        return candidates[0]
+    if not candidates:
+        raise RuntimeError(f"No Engine class found in biovance.{name}")
     raise RuntimeError(
-        f"Could not find an Engine class in biovance.{name}"
+        f"More than one Engine class found in biovance.{name}; "
+        "the live adapter cannot choose safely."
     )
 
 
 def _build_engine(name: str):
-    """
-    Instantiate a frozen BioVance engine using its package exports.
-
-    Supports the common BioVance patterns:
-      Engine.from_yaml(config_path)
-      Engine(load_<name>_config(config_path))
-      Engine()
-    """
+    """Instantiate a frozen BioVance engine without replacing its logic."""
     module = _import_package(name)
     engine_cls = _find_engine_class(module, name)
-
     config_path = ROOT / "configs" / f"{name}.yaml"
 
     if hasattr(engine_cls, "from_yaml") and config_path.exists():
         return engine_cls.from_yaml(config_path)
 
-    loader_name = f"load_{name}_config"
-    loader = getattr(module, loader_name, None)
-
+    loader = getattr(module, f"load_{name}_config", None)
     if loader is not None:
-        try:
-            config = loader(config_path)
-        except TypeError:
-            config = loader(str(config_path))
-
-        try:
-            return engine_cls(config)
-        except TypeError:
-            pass
+        for arg in (config_path, str(config_path), None):
+            try:
+                config = loader() if arg is None else loader(arg)
+                try:
+                    return engine_cls(config)
+                except TypeError:
+                    pass
+            except (TypeError, FileNotFoundError):
+                continue
 
     try:
         return engine_cls()
     except TypeError as exc:
         raise RuntimeError(
             f"Could not instantiate {engine_cls.__name__}. "
-            f"Expected either from_yaml(), {loader_name}(), "
-            "or a no-argument constructor."
+            "Expected from_yaml(), a config loader, or a no-argument constructor."
         ) from exc
 
 
 def _run_table_engine(
     engine: Any,
     df: pd.DataFrame,
-    methods: tuple[str, ...] = (
-        "transform",
-        "score",
-        "predict",
-        "decide",
-        "explain",
-        "run",
-    ),
+    methods: tuple[str, ...],
 ) -> pd.DataFrame:
     """
-    Run an actual BioVance engine without re-implementing its logic.
+    Run a real BioVance engine through one of its public table APIs.
 
-    The frozen modules do not all use the same public verb, so the
-    bridge looks for the module's own public table method.
+    No clinical fallback logic exists here. If the bridge contract is wrong,
+    the error is surfaced so it can be fixed rather than silently faked.
     """
-    last_error: Exception | None = None
+    errors: list[str] = []
 
     for method_name in methods:
         method = getattr(engine, method_name, None)
         if method is None:
             continue
-
         try:
             result = method(df.copy())
         except Exception as exc:
-            last_error = exc
+            errors.append(f"{method_name}: {type(exc).__name__}: {exc}")
             continue
 
         if isinstance(result, pd.DataFrame):
             return result
-
         if isinstance(result, pd.Series):
             return result.to_frame().T
-
         if isinstance(result, dict):
             return pd.DataFrame([result])
-
         if isinstance(result, np.ndarray):
             if result.ndim == 1:
                 return pd.DataFrame({"prediction": result})
             return pd.DataFrame(result)
 
-    engine_name = type(engine).__name__
+        errors.append(
+            f"{method_name}: unsupported return type {type(result).__name__}"
+        )
 
-    if last_error is not None:
-        raise RuntimeError(
-            f"{engine_name} was found, but its public table method "
-            f"could not consume the simulator bridge input. "
-            f"Last error: {last_error}"
-        ) from last_error
-
-    raise RuntimeError(
-        f"{engine_name} has none of the supported public methods: "
-        + ", ".join(methods)
-    )
+    name = type(engine).__name__
+    detail = " | ".join(errors[-3:]) if errors else "no supported public method"
+    raise RuntimeError(f"{name} could not consume the live bridge input. {detail}")
 
 
-# ============================================================
-# Synthetic patient source
-# ============================================================
+def _latest_record(df: pd.DataFrame | None) -> dict[str, Any]:
+    if df is None or df.empty:
+        return {}
+    return df.iloc[-1].to_dict()
+
+
+def _is_missing(value: Any) -> bool:
+    if value is None:
+        return True
+    try:
+        return bool(pd.isna(value))
+    except Exception:
+        return False
+
+
+def _attach_record(base: pd.DataFrame, record: dict[str, Any]) -> pd.DataFrame:
+    """Attach already-computed evidence to a one-row schema carrier."""
+    out = base.copy()
+    if out.empty:
+        out = pd.DataFrame([{}])
+    if len(out) > 1:
+        out = out.tail(1).copy()
+    for key, value in record.items():
+        out[key] = value
+    return out
+
+
+# ---------------------------------------------------------------------
+# Synthetic source
+# ---------------------------------------------------------------------
 
 @dataclass
 class SyntheticPatient:
@@ -153,11 +154,16 @@ class SyntheticPatient:
     age: int = 42
     male: int = 0
 
-    # Used only to generate synthetic physiology.
     hr_center: float = 64.0
     hrv_center: float = 48.0
     sbp_center: float = 118.0
     dbp_center: float = 75.0
+
+    # These are updated from the real learned baseline after initialization.
+    hr_noise: float = 1.5
+    hrv_noise: float = 2.0
+    sbp_noise: float = 2.5
+    dbp_noise: float = 1.8
 
     seed: int = 2026
 
@@ -167,104 +173,183 @@ class SimulatorState:
     patient: SyntheticPatient
     scenario: str = "Gradual deterioration"
     tick: int = 0
-    history: pd.DataFrame = field(
-        default_factory=lambda: pd.DataFrame()
-    )
+    history: pd.DataFrame = field(default_factory=pd.DataFrame)
 
 
 def make_baseline_history(
     patient: SyntheticPatient,
     n_days: int = 35,
+    n_reference_patients: int = 6,
 ) -> pd.DataFrame:
     """
-    Create synthetic historical observations only.
-
-    This history is used by the REAL Personalization Engine to
-    establish the patient's baseline before the live demo starts.
+    Build only the historical training cohort required by the real shrunk
+    Personalization Engine. No downstream state is precomputed.
     """
     rng = np.random.default_rng(patient.seed)
-
     start = pd.Timestamp("2026-01-01 06:00")
 
-    rows = []
+    subjects: list[dict[str, Any]] = []
+    for idx in range(n_reference_patients):
+        subjects.append(
+            {
+                "patient_id": f"REF-{idx + 1:03d}",
+                "hr_center": patient.hr_center + rng.normal(0, 6.0),
+                "hrv_center": max(20.0, patient.hrv_center + rng.normal(0, 8.0)),
+                "sbp_center": patient.sbp_center + rng.normal(0, 10.0),
+                "dbp_center": patient.dbp_center + rng.normal(0, 7.0),
+            }
+        )
 
-    # Multiple observations/day so the real daily aggregation
-    # contract has enough eligible HR/BP observations.
-    for day in range(n_days):
-        for hour in (6, 10, 14, 18):
-            ts = start + pd.Timedelta(days=day, hours=hour - 6)
+    subjects.append(
+        {
+            "patient_id": patient.patient_id,
+            "hr_center": patient.hr_center,
+            "hrv_center": patient.hrv_center,
+            "sbp_center": patient.sbp_center,
+            "dbp_center": patient.dbp_center,
+        }
+    )
 
-            rows.append(
-                {
-                    "patient_id": patient.patient_id,
-                    "timestamp": ts,
-                    "HR": patient.hr_center + rng.normal(0, 2.0),
-                    "HRV": patient.hrv_center + rng.normal(0, 3.0),
-                    "SBP": patient.sbp_center + rng.normal(0, 4.0),
-                    "DBP": patient.dbp_center + rng.normal(0, 3.0),
-                    "signal_quality": 0.96,
-                    "context": "rest",
-                }
-            )
+    rows: list[dict[str, Any]] = []
+    for subject in subjects:
+        deterministic_offset = sum(ord(c) for c in subject["patient_id"])
+        srng = np.random.default_rng(patient.seed + deterministic_offset)
 
+        for day in range(n_days):
+            for hour in (6, 10, 14, 18):
+                ts = start + pd.Timedelta(days=day, hours=hour - 6)
+                rows.append(
+                    {
+                        "patient_id": subject["patient_id"],
+                        "timestamp": ts,
+                        "HR": subject["hr_center"] + srng.normal(0, 2.0),
+                        "HRV": subject["hrv_center"] + srng.normal(0, 3.0),
+                        "SBP": subject["sbp_center"] + srng.normal(0, 4.0),
+                        "DBP": subject["dbp_center"] + srng.normal(0, 3.0),
+                        "signal_quality": 0.96,
+                        "context": "rest",
+                    }
+                )
     return pd.DataFrame(rows)
 
 
-def generate_next_observation(
-    state: SimulatorState,
-) -> dict[str, Any]:
-    """
-    Generate ONE new live observation.
+def _baseline_value(
+    baselines: pd.DataFrame,
+    signal: str,
+    names: tuple[str, ...],
+    default=np.nan,
+):
+    rows = baselines[
+        baselines["signal"].astype(str).str.lower() == signal.lower()
+    ]
+    if rows.empty:
+        return default
+    row = rows.iloc[0]
+    for name in names:
+        if name in row.index and pd.notna(row[name]):
+            return row[name]
+    return default
 
-    The simulator generates only the raw synthetic measurement.
-    It does not calculate z-scores, temporal evidence, Fusion,
+
+def learn_personal_baselines(
+    patient: SyntheticPatient,
+) -> tuple[PersonalizationEngine, pd.DataFrame]:
+    history = make_baseline_history(patient)
+    config = load_personalization_config("simulator", mode="shrunk")
+    engine = PersonalizationEngine(config).fit(history)
+    baselines = engine.baselines(history)
+    target = baselines[
+        baselines["patient_id"].astype(str) == str(patient.patient_id)
+    ].copy()
+
+    if target.empty:
+        raise RuntimeError(
+            "Personalization did not produce an established baseline "
+            "for the synthetic target patient."
+        )
+    return engine, target
+
+
+def _align_generator_to_learned_baseline(
+    patient: SyntheticPatient,
+    baselines: pd.DataFrame,
+) -> None:
+    """
+    Presentation-safety fix:
+    stable live physiology is generated around the *actual learned baseline*,
+    not around the pre-fit seed values.
+
+    This prevents a valid shrinkage adjustment from looking like pathology.
+    """
+    mapping = {
+        "hr": ("hr_center", "hr_noise"),
+        "hrv": ("hrv_center", "hrv_noise"),
+        "sbp": ("sbp_center", "sbp_noise"),
+        "dbp": ("dbp_center", "dbp_noise"),
+    }
+    for signal, (center_attr, noise_attr) in mapping.items():
+        center = _baseline_value(
+            baselines, signal, ("center", "baseline_center", "center_raw")
+        )
+        scale = _baseline_value(
+            baselines, signal, ("scale", "baseline_scale", "scale_raw")
+        )
+        if pd.notna(center):
+            setattr(patient, center_attr, float(center))
+        if pd.notna(scale) and float(scale) > 0:
+            # Keep stable points mostly inside ±1 personal SD.
+            setattr(patient, noise_attr, max(0.35, min(float(scale) * 0.45, 3.0)))
+
+
+def generate_next_observation(state: SimulatorState) -> dict[str, Any]:
+    """
+    Generate ONE new raw synthetic observation.
+
+    This generator never calculates deviation, temporal state, Fusion,
     uncertainty, decisions, or explanations.
     """
     p = state.patient
     tick = state.tick
-
     rng = np.random.default_rng(p.seed + 10000 + tick)
 
-    # Accelerated simulated time: each real UI refresh represents
-    # 30 minutes of patient time.
-    ts = (
-        pd.Timestamp("2026-02-05 08:00")
-        + pd.Timedelta(minutes=30 * tick)
+    timestamp = pd.Timestamp("2026-02-05 08:00") + pd.Timedelta(
+        minutes=30 * tick
     )
 
-    hr = p.hr_center + rng.normal(0, 1.4)
-    hrv = p.hrv_center + rng.normal(0, 2.0)
-    sbp = p.sbp_center + rng.normal(0, 2.0)
-    dbp = p.dbp_center + rng.normal(0, 1.5)
+    hr = p.hr_center + rng.normal(0, p.hr_noise)
+    hrv = p.hrv_center + rng.normal(0, p.hrv_noise)
+    sbp = p.sbp_center + rng.normal(0, p.sbp_noise)
+    dbp = p.dbp_center + rng.normal(0, p.dbp_noise)
 
     hr_q = hrv_q = sbp_q = dbp_q = 0.96
 
-    # Keep the first few live ticks stable, then introduce the
-    # scenario gradually.
+    # Give the engines several baseline-like live points before a scenario starts.
     phase = max(0, tick - 5)
 
     if state.scenario == "Gradual deterioration":
-        hr += 2.4 * phase
-        sbp += 3.7 * phase
-        dbp += 2.3 * phase
-        hrv -= 3.2 * phase
+        # Smooth risk-aligned drift across independent physiological families.
+        hr += 0.90 * phase
+        sbp += 1.50 * phase
+        dbp += 0.85 * phase
+        hrv -= 1.20 * phase
 
     elif state.scenario == "Conflicting signals":
-        hr += 2.4 * phase
-        sbp += 3.3 * phase
-        # HRV moves in the opposite/reassuring direction.
-        hrv += 3.0 * phase
+        hr += 0.90 * phase
+        sbp += 1.40 * phase
+        dbp += 0.60 * phase
+        # HRV deliberately moves in the reassuring direction.
+        hrv += 1.20 * phase
 
     elif state.scenario == "Sensor dropout" and tick >= 8:
         hr = np.nan
-        sbp = np.nan
         hrv = np.nan
-        hr_q = sbp_q = hrv_q = 0.05
+        sbp = np.nan
+        hr_q = hrv_q = sbp_q = 0.05
         dbp_q = 0.82
 
     return {
         "patient_id": p.patient_id,
-        "timestamp": ts,
+        "timestamp": timestamp,
         "HR": hr,
         "HRV": hrv,
         "SBP": sbp,
@@ -279,112 +364,31 @@ def generate_next_observation(
     }
 
 
-# ============================================================
-# Real Personalization -> canonical Deviation bridge
-# ============================================================
-
-def learn_personal_baselines(
-    patient: SyntheticPatient,
-) -> tuple[PersonalizationEngine, pd.DataFrame]:
-    baseline_history = make_baseline_history(patient)
-
-    config = load_personalization_config(
-        "simulator",
-        mode="shrunk",
-    )
-
-    engine = PersonalizationEngine(config).fit(
-        baseline_history
-    )
-
-    baselines = engine.baselines(
-        baseline_history
-    )
-
-    target = baselines[
-        baselines["patient_id"].astype(str)
-        == str(patient.patient_id)
-    ].copy()
-
-    if target.empty:
-        raise RuntimeError(
-            "Real Personalization Engine did not produce a baseline "
-            "for the synthetic patient."
-        )
-
-    return engine, target
-
-
-def _baseline_value(
-    baselines: pd.DataFrame,
-    signal: str,
-    names: tuple[str, ...],
-    default=np.nan,
-):
-    row = baselines[
-        baselines["signal"].astype(str).str.lower()
-        == signal.lower()
-    ]
-
-    if row.empty:
-        return default
-
-    row = row.iloc[0]
-
-    for name in names:
-        if name in row.index and pd.notna(row[name]):
-            return row[name]
-
-    return default
-
+# ---------------------------------------------------------------------
+# Personalization -> Deviation bridge
+# ---------------------------------------------------------------------
 
 def build_deviation_input(
     observation: dict[str, Any],
     baselines: pd.DataFrame,
 ) -> pd.DataFrame:
     """
-    Adapt the synthetic current observation into the documented
-    Deviation Engine canonical schema.
+    Schema adapter only. It does not calculate a deviation.
 
-    Required canonical fields:
-      patient_id, timestamp, signal, value,
-      baseline_center, baseline_scale
+    NOTE:
+    The current presentation simulator supplies synthetic quality metadata and
+    a fixed REST context. Real Quality/Context engines are validated elsewhere
+    in the project and are not silently imitated here.
     """
-    signal_map = {
-        "hr": "HR",
-        "hrv": "HRV",
-        "sbp": "SBP",
-        "dbp": "DBP",
-    }
-
+    signal_map = {"hr": "HR", "hrv": "HRV", "sbp": "SBP", "dbp": "DBP"}
     rows = []
 
-    for signal, raw_col in signal_map.items():
-        value = observation.get(raw_col, np.nan)
-
-        center = _baseline_value(
-            baselines,
-            signal,
-            ("center", "center_raw", "baseline_center"),
-        )
-
-        scale = _baseline_value(
-            baselines,
-            signal,
-            ("scale", "scale_raw", "baseline_scale"),
-        )
-
-        baseline_n = _baseline_value(
-            baselines,
-            signal,
-            ("n_valid", "baseline_n", "n", "valid_days"),
-            default=np.nan,
-        )
-
+    for signal, raw_column in signal_map.items():
         quality = observation.get(
             f"{signal}_quality",
             observation.get("signal_quality", 1.0),
         )
+        value = observation.get(raw_column, np.nan)
 
         rows.append(
             {
@@ -392,55 +396,65 @@ def build_deviation_input(
                 "timestamp": observation["timestamp"],
                 "signal": signal,
                 "value": value,
-                "baseline_center": center,
-                "baseline_scale": scale,
-                "baseline_n": baseline_n,
+                "baseline_center": _baseline_value(
+                    baselines,
+                    signal,
+                    ("center", "baseline_center", "center_raw"),
+                ),
+                "baseline_scale": _baseline_value(
+                    baselines,
+                    signal,
+                    ("scale", "baseline_scale", "scale_raw"),
+                ),
+                "baseline_n": _baseline_value(
+                    baselines,
+                    signal,
+                    ("n_valid", "baseline_n", "n", "valid_days"),
+                ),
                 "baseline_status": "ESTABLISHED",
                 "quality_score": quality,
                 "quality_status": (
-                    "GOOD" if quality >= 0.70 else "POOR"
+                    "GOOD"
+                    if pd.notna(quality) and float(quality) >= 0.70
+                    else "POOR"
                 ),
                 "context_state": "REST",
                 "context_confidence": 1.0,
-                "phase": observation.get(
-                    "phase",
-                    "EVALUATION",
-                ),
+                "phase": observation.get("phase", "EVALUATION"),
             }
         )
-
     return pd.DataFrame(rows)
 
 
-# ============================================================
-# Strict real-engine pipeline
-# ============================================================
+# ---------------------------------------------------------------------
+# Live pipeline
+# ---------------------------------------------------------------------
 
 class RealBioVanceLivePipeline:
     """
-    Simulator source + frozen BioVance engines.
+    Synthetic source + real frozen BioVance downstream engines.
 
-    IMPORTANT:
-    The simulator does NOT reproduce downstream engine logic.
-    It only generates raw measurements and adapts schemas.
+    Real in live path:
+      Personalization -> Deviation -> Temporal -> Fusion ->
+      Uncertainty -> Decision -> Explainability
 
-    Personalization, Deviation, Temporal, Fusion, Uncertainty,
-    Decision, and Explainability are executed through the actual
-    biovance.* packages from src/.
+    Presentation adapters:
+      synthetic quality metadata + fixed REST context
+
+    Background Risk:
+      unavailable in this live synthetic path unless explicitly connected.
+      It is NEVER fabricated.
     """
 
-    def __init__(
-        self,
-        patient: SyntheticPatient | None = None,
-    ):
+    def __init__(self, patient: SyntheticPatient | None = None):
         self.patient = patient or SyntheticPatient()
 
         (
             self.personalization_engine,
             self.baselines,
-        ) = learn_personal_baselines(
-            self.patient
-        )
+        ) = learn_personal_baselines(self.patient)
+
+        _align_generator_to_learned_baseline(self.patient, self.baselines)
 
         self.deviation_engine = _build_engine("deviation")
         self.temporal_engine = _build_engine("temporal")
@@ -449,140 +463,190 @@ class RealBioVanceLivePipeline:
         self.decision_engine = _build_engine("decision")
         self.explainability_engine = _build_engine("explainability")
 
-        # Risk is intentionally unavailable in the first live
-        # physiology demo. This is a valid BioVance pathway:
-        # strong current physiology can WARN without Framingham,
-        # while background risk alone can never create WARN.
         self.risk_probability = np.nan
         self.risk_input_completeness = np.nan
 
         self.deviation_history = pd.DataFrame()
 
-    def reset(self):
+    def reset(self) -> None:
         self.deviation_history = pd.DataFrame()
 
-    def process(
+    def baseline_summary(self) -> dict[str, dict[str, float]]:
+        out: dict[str, dict[str, float]] = {}
+        for signal in ("hr", "hrv", "sbp", "dbp"):
+            out[signal] = {
+                "center": float(
+                    _baseline_value(
+                        self.baselines,
+                        signal,
+                        ("center", "baseline_center", "center_raw"),
+                    )
+                ),
+                "scale": float(
+                    _baseline_value(
+                        self.baselines,
+                        signal,
+                        ("scale", "baseline_scale", "scale_raw"),
+                    )
+                ),
+            }
+        return out
+
+    def _current_fusion_row(
+        self,
+        fusion_output: pd.DataFrame,
+        current_timestamp: pd.Timestamp,
+    ) -> pd.DataFrame:
+        """
+        Return Fusion for exactly the current physiological moment.
+
+        IMPORTANT:
+        Do not fall back to a stale previous Fusion row. If the real Fusion
+        engine emits nothing for the current moment, downstream uncertainty
+        should see Fusion as unavailable.
+        """
+        if fusion_output is None or fusion_output.empty:
+            return pd.DataFrame()
+
+        if "timestamp" not in fusion_output.columns:
+            # Only accept a timestamp-less result if the engine returned one row.
+            return fusion_output.copy() if len(fusion_output) == 1 else pd.DataFrame()
+
+        ts = pd.to_datetime(fusion_output["timestamp"])
+        current = fusion_output[ts == current_timestamp].copy()
+
+        if len(current) <= 1:
+            return current
+
+        # Atomic safety guard: choose one only if a legacy engine emitted more.
+        if "fusion_score" in current.columns:
+            return current.sort_values(
+                "fusion_score", ascending=False, na_position="last"
+            ).head(1)
+        return current.head(1)
+
+    def _missing_fusion_carrier(
         self,
         observation: dict[str, Any],
-    ) -> dict[str, Any]:
-        # ----------------------------------------------------
-        # 1) Real Personalization baseline is already learned.
-        # 2) Real Deviation Engine
-        # ----------------------------------------------------
-        deviation_input = build_deviation_input(
-            observation,
-            self.baselines,
+    ) -> pd.DataFrame:
+        """
+        Schema carrier for a genuinely missing current Fusion result.
+        This is not a synthetic Fusion decision: fields are explicitly missing.
+        """
+        return pd.DataFrame(
+            [
+                {
+                    "patient_id": observation["patient_id"],
+                    "timestamp": observation["timestamp"],
+                    "fusion_state": np.nan,
+                    "fusion_score": np.nan,
+                    "fusion_confidence": np.nan,
+                }
+            ]
         )
 
+    def process(self, observation: dict[str, Any]) -> dict[str, Any]:
+        current_timestamp = pd.Timestamp(observation["timestamp"])
+
+        # 1) Personalization baseline -> Deviation schema
+        deviation_input = build_deviation_input(observation, self.baselines)
+
+        # 2) Real Deviation
         deviation_output = _run_table_engine(
             self.deviation_engine,
             deviation_input,
-            methods=("transform", "score", "run"),
+            methods=("transform", "score", "evaluate", "run"),
         )
 
         self.deviation_history = pd.concat(
-            [
-                self.deviation_history,
-                deviation_output,
-            ],
+            [self.deviation_history, deviation_output],
             ignore_index=True,
         )
 
-        # ----------------------------------------------------
-        # 3) Real Temporal Engine on all past/current evidence
-        # ----------------------------------------------------
+        # 3) Real Temporal on all causal history so far
         temporal_output = _run_table_engine(
             self.temporal_engine,
             self.deviation_history,
-            methods=("transform", "score", "run"),
+            methods=("transform", "score", "evaluate", "run"),
         )
 
-        # ----------------------------------------------------
-        # 4) Real Fusion Engine
-        # ----------------------------------------------------
+        # 4) Real Fusion
         fusion_output = _run_table_engine(
             self.fusion_engine,
             temporal_output,
-            methods=("transform", "score", "run"),
+            methods=("transform", "score", "evaluate", "run"),
         )
 
-        # The final frozen Fusion version emits one atomic row
-        # per patient/timestamp. If an older row-level build is
-        # present locally, select the latest rows for the moment.
-        current_ts = pd.Timestamp(observation["timestamp"])
-
-        current_fusion = fusion_output[
-            pd.to_datetime(
-                fusion_output["timestamp"]
-            )
-            == current_ts
-        ].copy()
-
-        if current_fusion.empty:
-            current_fusion = fusion_output.tail(1).copy()
-
-        if len(current_fusion) > 1:
-            # Prefer a single atomic row if present; otherwise
-            # take the strongest current row only for display.
-            if "fusion_score" in current_fusion.columns:
-                current_fusion = current_fusion.sort_values(
-                    "fusion_score",
-                    ascending=False,
-                    na_position="last",
-                ).head(1)
-            else:
-                current_fusion = current_fusion.head(1)
-
-        downstream = current_fusion.copy()
-
-        downstream["risk_probability"] = (
-            self.risk_probability
-        )
-        downstream["risk_input_completeness"] = (
-            self.risk_input_completeness
+        current_fusion = self._current_fusion_row(
+            fusion_output, current_timestamp
         )
 
-        # ----------------------------------------------------
-        # 5) Real Uncertainty Engine
-        # ----------------------------------------------------
+        fusion_available = not current_fusion.empty
+        if fusion_available:
+            downstream = current_fusion.copy()
+        else:
+            downstream = self._missing_fusion_carrier(observation)
+
+        # Background risk is deliberately unavailable in this synthetic live path.
+        downstream["risk_probability"] = self.risk_probability
+        downstream["risk_input_completeness"] = self.risk_input_completeness
+
+        # 5) Real Uncertainty
         uncertainty_output = _run_table_engine(
             self.uncertainty_engine,
             downstream,
-            methods=("score", "transform", "run"),
+            methods=("score", "transform", "evaluate", "run"),
         )
 
-        # ----------------------------------------------------
-        # 6) Real Decision Engine
-        # ----------------------------------------------------
+        uncertainty_record = _latest_record(uncertainty_output)
+
+        # 6) REAL Decision — critical schema-preservation fix.
+        #
+        # The previous bridge passed uncertainty_output alone. If the
+        # Uncertainty Engine returns only uncertainty-specific columns,
+        # Fusion fields disappear and Decision incorrectly thinks Fusion is
+        # unavailable. We preserve current Fusion/risk evidence and attach the
+        # already-computed uncertainty fields.
+        decision_input = _attach_record(downstream, uncertainty_record)
+
         decision_output = _run_table_engine(
             self.decision_engine,
-            uncertainty_output,
-            methods=("transform", "decide", "score", "run"),
+            decision_input,
+            methods=("transform", "decide", "score", "evaluate", "run"),
         )
 
-        # ----------------------------------------------------
-        # 7) Real Explainability Engine
-        # ----------------------------------------------------
+        decision_record = _latest_record(decision_output)
+
+        # 7) Explainability gets the same evidence plus final Decision.
+        explainability_input = _attach_record(decision_input, decision_record)
+
         explanation_output = _run_table_engine(
             self.explainability_engine,
-            decision_output,
-            methods=("transform", "explain", "score", "run"),
+            explainability_input,
+            methods=("transform", "explain", "score", "evaluate", "run"),
         )
 
-        def latest_record(df: pd.DataFrame) -> dict[str, Any]:
-            if df is None or df.empty:
-                return {}
-            return df.iloc[-1].to_dict()
+        # Current temporal rows for UI.
+        if "timestamp" in temporal_output.columns:
+            temporal_current = temporal_output[
+                pd.to_datetime(temporal_output["timestamp"]) == current_timestamp
+            ].copy()
+        else:
+            temporal_current = temporal_output.tail(4).copy()
 
         return {
             "observation": dict(observation),
             "deviation_current": deviation_output.copy(),
-            "temporal_current": temporal_output[
-                pd.to_datetime(temporal_output["timestamp"])
-                == current_ts
-            ].copy(),
-            "fusion": latest_record(current_fusion),
-            "uncertainty": latest_record(uncertainty_output),
-            "decision": latest_record(decision_output),
-            "explanation": latest_record(explanation_output),
+            "temporal_current": temporal_current,
+            "fusion": _latest_record(current_fusion),
+            "fusion_available": fusion_available,
+            "uncertainty": uncertainty_record,
+            "decision": decision_record,
+            "explanation": _latest_record(explanation_output),
+            "risk": {
+                "risk_probability": self.risk_probability,
+                "risk_input_completeness": self.risk_input_completeness,
+                "status": "UNAVAILABLE_IN_LIVE_SYNTHETIC_PATH",
+            },
         }
+
